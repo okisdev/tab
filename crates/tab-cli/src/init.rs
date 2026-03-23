@@ -29,9 +29,7 @@ __tab_active=0
 
 __tab_start_coproc() {
     if [[ -z "${__tab_coproc_pid:-}" ]] || ! kill -0 "$__tab_coproc_pid" 2>/dev/null; then
-        coproc __tab_conn {
-            exec "$__tab_bin" hook --shell zsh --session "$__tab_sid" 2>/dev/null
-        }
+        coproc "$__tab_bin" hook --shell zsh --session "$__tab_sid" 2>/dev/null
         __tab_coproc_pid=$!
     fi
 }
