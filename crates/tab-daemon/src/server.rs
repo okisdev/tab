@@ -252,7 +252,7 @@ async fn handle_message(
             let session = state
                 .sessions
                 .entry(ctx.session_id.clone())
-                .or_insert_with(|| Session::new(ctx.session_id.clone()));
+                .or_insert_with(Session::new);
             session.update_candidates(candidates.clone());
 
             // Forward to overlay only (no response to shell for context)

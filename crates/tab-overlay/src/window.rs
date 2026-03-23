@@ -131,6 +131,7 @@ pub fn start_message_poll(
     }
 }
 
+#[allow(dead_code)] // Used when accessibility positioning is wired
 pub fn position_panel(
     panel: &NSPanel,
     screen_x: f64,

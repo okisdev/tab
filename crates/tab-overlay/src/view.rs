@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, AllocAnyThread, MainThreadOnly};
 use objc2_app_kit::{NSAttributedStringNSStringDrawing, NSColor, NSFont, NSView};
@@ -31,13 +33,21 @@ define_class!(
     }
 );
 
-// Global state for candidate view (single instance, main thread only)
-static mut CANDIDATES: Vec<Candidate> = Vec::new();
-static mut SELECTED: usize = 0;
+struct ViewState {
+    candidates: Vec<Candidate>,
+    selected: usize,
+}
+
+static STATE: Mutex<ViewState> = Mutex::new(ViewState {
+    candidates: Vec::new(),
+    selected: 0,
+});
 
 impl CandidateView {
     fn draw_candidates(&self) {
-        let (candidates, selected) = unsafe { (&*(&raw const CANDIDATES), SELECTED) };
+        let state = STATE.lock().unwrap();
+        let candidates = &state.candidates;
+        let selected = state.selected;
 
         let font = NSFont::monospacedSystemFontOfSize_weight(13.0, 0.0);
         let bold_font = NSFont::monospacedSystemFontOfSize_weight(13.0, 0.7);
@@ -124,16 +134,15 @@ pub fn create_candidate_view(mtm: MainThreadMarker) -> Retained<CandidateView> {
 }
 
 pub fn update_candidates(view: &CandidateView, candidates: &[Candidate], selected: usize) {
-    unsafe {
-        CANDIDATES = candidates.to_vec();
-        SELECTED = selected;
+    {
+        let mut state = STATE.lock().unwrap();
+        state.candidates = candidates.to_vec();
+        state.selected = selected;
     }
     view.setNeedsDisplay(true);
 }
 
 pub fn update_selection(view: &CandidateView, selected: usize) {
-    unsafe {
-        SELECTED = selected;
-    }
+    STATE.lock().unwrap().selected = selected;
     view.setNeedsDisplay(true);
 }

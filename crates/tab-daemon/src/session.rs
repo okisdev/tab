@@ -2,15 +2,13 @@ use tab_core::Candidate;
 
 /// Per-shell-session state tracked by the daemon.
 pub struct Session {
-    pub session_id: String,
     pub selected_index: u32,
     pub last_candidates: Vec<Candidate>,
 }
 
 impl Session {
-    pub fn new(session_id: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            session_id,
             selected_index: 0,
             last_candidates: Vec::new(),
         }
