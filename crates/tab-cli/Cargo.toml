@@ -1,0 +1,18 @@
+[package]
+name = "tab-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "tab"
+path = "src/main.rs"
+
+[dependencies]
+tab-core = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }

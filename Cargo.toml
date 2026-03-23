@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/tab-core",
+    "crates/tab-history",
+    "crates/tab-daemon",
+    "crates/tab-overlay",
+    "crates/tab-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tab-core = { path = "crates/tab-core" }
+tab-history = { path = "crates/tab-history" }
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nucleo-matcher = "0.3"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
