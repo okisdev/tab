@@ -37,10 +37,7 @@ pub fn run(buffer: &str, cwd: &str) -> Result<Option<String>> {
     query_daemon(&mut state);
 
     // Open /dev/tty directly — independent of stdin/stdout/stderr
-    let mut tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")?;
+    let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
 
     let tty_fd = tty.as_raw_fd();
 
@@ -93,9 +90,7 @@ fn event_loop(tty: &mut std::fs::File, state: &mut State) -> Result<Option<Strin
             }
 
             Some(Key::Down) | Some(Key::CtrlN) => {
-                if !state.candidates.is_empty()
-                    && state.selected < state.candidates.len() - 1
-                {
+                if !state.candidates.is_empty() && state.selected < state.candidates.len() - 1 {
                     state.selected += 1;
                     render(tty, state);
                 }
@@ -223,10 +218,10 @@ enum Key {
 
 fn parse_key(buf: &[u8]) -> Option<Key> {
     match buf {
-        [27, 91, 65] => Some(Key::Up),    // \x1b[A
-        [27, 91, 66] => Some(Key::Down),  // \x1b[B
-        [27, 79, 65] => Some(Key::Up),    // \x1bOA
-        [27, 79, 66] => Some(Key::Down),  // \x1bOB
+        [27, 91, 65] => Some(Key::Up),   // \x1b[A
+        [27, 91, 66] => Some(Key::Down), // \x1b[B
+        [27, 79, 65] => Some(Key::Up),   // \x1bOA
+        [27, 79, 66] => Some(Key::Down), // \x1bOB
         [27, ..] => Some(Key::Esc),
         [13] => Some(Key::Enter),
         [9] => Some(Key::Tab),
@@ -268,7 +263,12 @@ fn termios_get(fd: i32) -> Result<Termios> {
 
 fn termios_set(fd: i32, t: &Termios) -> Result<()> {
     unsafe {
-        if libc::tcsetattr(fd, libc::TCSANOW, t as *const Termios as *const libc::termios) != 0 {
+        if libc::tcsetattr(
+            fd,
+            libc::TCSANOW,
+            t as *const Termios as *const libc::termios,
+        ) != 0
+        {
             anyhow::bail!("tcsetattr failed");
         }
         Ok(())
@@ -293,10 +293,18 @@ fn query_daemon(state: &mut State) {
         match_mode: String::new(),
     };
 
-    let Ok(json) = serde_json::to_string(&req) else { return };
-    if state.daemon_writer.write_all(json.as_bytes()).is_err() { return; }
-    if state.daemon_writer.write_all(b"\n").is_err() { return; }
-    if state.daemon_writer.flush().is_err() { return; }
+    let Ok(json) = serde_json::to_string(&req) else {
+        return;
+    };
+    if state.daemon_writer.write_all(json.as_bytes()).is_err() {
+        return;
+    }
+    if state.daemon_writer.write_all(b"\n").is_err() {
+        return;
+    }
+    if state.daemon_writer.flush().is_err() {
+        return;
+    }
 
     let mut line = String::new();
     if state.daemon_reader.read_line(&mut line).is_ok() {

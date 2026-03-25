@@ -78,8 +78,7 @@ fn main() -> Result<()> {
         _ => {
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    EnvFilter::try_from_env("TAB_LOG")
-                        .unwrap_or_else(|_| EnvFilter::new("warn")),
+                    EnvFilter::try_from_env("TAB_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
                 )
                 .with_writer(std::io::stderr)
                 .init();

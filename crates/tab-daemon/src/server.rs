@@ -106,11 +106,12 @@ async fn handle_query(req: QueryRequest, state: &Arc<Mutex<DaemonState>>) -> Que
         req.match_mode.clone()
     };
 
-    let script_candidates =
-        crate::scripts::query_scripts(&req.buffer, &req.cwd, MAX_CANDIDATES);
-    let path_candidates =
-        crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
-    let history_candidates = state.history.query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
+    let script_candidates = crate::scripts::query_scripts(&req.buffer, &req.cwd, MAX_CANDIDATES);
+    let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
+    let history_candidates =
+        state
+            .history
+            .query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
 
     // Merge: scripts first, then history, then paths (filesystem is fallback)
     let top = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);

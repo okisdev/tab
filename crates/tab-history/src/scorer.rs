@@ -44,9 +44,7 @@ impl HistoryIndex {
             if entry.command.len() > MAX_COMMAND_LEN {
                 continue;
             }
-            let e = freq_map
-                .entry(entry.command.clone())
-                .or_insert((0, 0));
+            let e = freq_map.entry(entry.command.clone()).or_insert((0, 0));
             e.0 += 1;
             if entry.timestamp > e.1 {
                 e.1 = entry.timestamp;
@@ -71,7 +69,13 @@ impl HistoryIndex {
 
     /// Query the index and return ranked candidates.
     /// `match_mode`: "prefix" = only prefix matches, "fuzzy" (default) = fuzzy + prefix bonus.
-    pub fn query(&mut self, query: &str, cwd: &str, max_results: usize, match_mode: &str) -> Vec<Candidate> {
+    pub fn query(
+        &mut self,
+        query: &str,
+        cwd: &str,
+        max_results: usize,
+        match_mode: &str,
+    ) -> Vec<Candidate> {
         if query.is_empty() {
             return self.recent_commands(max_results);
         }
@@ -91,12 +95,7 @@ impl HistoryIndex {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let max_freq = self
-            .commands
-            .iter()
-            .map(|c| c.frequency)
-            .max()
-            .unwrap_or(1) as f64;
+        let max_freq = self.commands.iter().map(|c| c.frequency).max().unwrap_or(1) as f64;
 
         let query_lower = query.to_ascii_lowercase();
         let mut scored: Vec<(usize, f64, Vec<u32>)> = Vec::new();

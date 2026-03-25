@@ -37,8 +37,7 @@ pub fn init(component: &str, default_level: &str) {
 
     let level = resolve_level(default_level);
 
-    let filter = EnvFilter::try_from_env("TAB_LOG")
-        .unwrap_or_else(|_| EnvFilter::new(&level));
+    let filter = EnvFilter::try_from_env("TAB_LOG").unwrap_or_else(|_| EnvFilter::new(&level));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)

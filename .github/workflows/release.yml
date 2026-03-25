@@ -41,7 +41,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../tab_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.tar.gz tab tab-daemon tab-overlay
+          tar czf ../../../tab_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.tar.gz tab tab-daemon
           cd ../../..
 
       - name: Upload artifact
@@ -112,7 +112,6 @@ jobs:
             def install
               bin.install "tab"
               bin.install "tab-daemon"
-              bin.install "tab-overlay"
             end
 
             def caveats
@@ -122,9 +121,6 @@ jobs:
 
                 Then install the background service:
                   tab install
-
-                Tab requires Accessibility permissions for the overlay popup.
-                Grant access in: System Settings → Privacy & Security → Accessibility
               EOS
             end
 

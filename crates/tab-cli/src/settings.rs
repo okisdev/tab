@@ -18,7 +18,11 @@ pub fn run() -> Result<()> {
         Setting {
             label: "Match mode",
             options: vec!["fuzzy".into(), "prefix".into()],
-            selected: if config.completion.match_mode == "prefix" { 1 } else { 0 },
+            selected: if config.completion.match_mode == "prefix" {
+                1
+            } else {
+                0
+            },
         },
         Setting {
             label: "Max results",
@@ -27,7 +31,14 @@ pub fn run() -> Result<()> {
         },
         Setting {
             label: "Log level",
-            options: vec!["".into(), "error".into(), "warn".into(), "info".into(), "debug".into(), "trace".into()],
+            options: vec![
+                "".into(),
+                "error".into(),
+                "warn".into(),
+                "info".into(),
+                "debug".into(),
+                "trace".into(),
+            ],
             selected: match config.log.level.as_str() {
                 "error" => 1,
                 "warn" => 2,
@@ -58,14 +69,23 @@ pub fn run() -> Result<()> {
     let saved;
     loop {
         let n = tty.read(&mut buf)?;
-        if n == 0 { saved = false; break; }
+        if n == 0 {
+            saved = false;
+            break;
+        }
 
         match &buf[..n] {
             // Esc or Ctrl-C
-            [27] | [3] => { saved = false; break; }
+            [27] | [3] => {
+                saved = false;
+                break;
+            }
 
             // Enter
-            [13] => { saved = true; break; }
+            [13] => {
+                saved = true;
+                break;
+            }
 
             // Up
             [27, 91, 65] | [27, 79, 65] => {
@@ -75,21 +95,27 @@ pub fn run() -> Result<()> {
 
             // Down
             [27, 91, 66] | [27, 79, 66] => {
-                if cursor < settings.len() - 1 { cursor += 1; }
+                if cursor < settings.len() - 1 {
+                    cursor += 1;
+                }
                 render(&mut tty, &settings, cursor);
             }
 
             // Left
             [27, 91, 68] | [27, 79, 68] => {
                 let s = &mut settings[cursor];
-                if s.selected > 0 { s.selected -= 1; }
+                if s.selected > 0 {
+                    s.selected -= 1;
+                }
                 render(&mut tty, &settings, cursor);
             }
 
             // Right
             [27, 91, 67] | [27, 79, 67] => {
                 let s = &mut settings[cursor];
-                if s.selected < s.options.len() - 1 { s.selected += 1; }
+                if s.selected < s.options.len() - 1 {
+                    s.selected += 1;
+                }
                 render(&mut tty, &settings, cursor);
             }
 
@@ -147,7 +173,11 @@ fn render(tty: &mut std::fs::File, settings: &[Setting], cursor: usize) {
     // Settings
     for (i, s) in settings.iter().enumerate() {
         out.push_str("\r\n\x1b[2K");
-        let marker = if i == cursor { "\x1b[36m▸\x1b[0m" } else { " " };
+        let marker = if i == cursor {
+            "\x1b[36m▸\x1b[0m"
+        } else {
+            " "
+        };
         out.push_str(&format!("  {marker} \x1b[1m{:<14}\x1b[0m", s.label));
 
         for (j, opt) in s.options.iter().enumerate() {
@@ -194,7 +224,12 @@ fn termios_get(fd: i32) -> Result<Termios> {
 
 fn termios_set(fd: i32, t: &Termios) -> Result<()> {
     unsafe {
-        if libc::tcsetattr(fd, libc::TCSANOW, t as *const Termios as *const libc::termios) != 0 {
+        if libc::tcsetattr(
+            fd,
+            libc::TCSANOW,
+            t as *const Termios as *const libc::termios,
+        ) != 0
+        {
             anyhow::bail!("tcsetattr failed");
         }
         Ok(())
@@ -202,7 +237,9 @@ fn termios_set(fd: i32, t: &Termios) -> Result<()> {
 }
 
 fn termios_make_raw(t: &mut Termios) {
-    unsafe { libc::cfmakeraw(t as *mut Termios as *mut libc::termios); }
+    unsafe {
+        libc::cfmakeraw(t as *mut Termios as *mut libc::termios);
+    }
     t.c_cc[libc::VMIN] = 1;
     t.c_cc[libc::VTIME] = 0;
 }

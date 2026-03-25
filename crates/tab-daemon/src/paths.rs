@@ -6,11 +6,10 @@ const DIR_COMMANDS: &[&str] = &["cd", "pushd", "z", "ls"];
 
 /// Commands that complete with files
 const FILE_COMMANDS: &[&str] = &[
-    "cat", "less", "head", "tail", "vim", "nvim", "nano", "code", "open",
-    "rm", "cp", "mv", "chmod", "source", ".", "bat",
-    "python", "python3", "node", "ruby", "perl", "bash", "sh", "zsh",
-    "cargo", "go", "deno", "bun", "tsx", "ts-node", "npx",
-    "touch", "mkdir", "stat", "file", "wc", "grep", "rg", "diff",
+    "cat", "less", "head", "tail", "vim", "nvim", "nano", "code", "open", "rm", "cp", "mv",
+    "chmod", "source", ".", "bat", "python", "python3", "node", "ruby", "perl", "bash", "sh",
+    "zsh", "cargo", "go", "deno", "bun", "tsx", "ts-node", "npx", "touch", "mkdir", "stat", "file",
+    "wc", "grep", "rg", "diff",
 ];
 
 /// Generate filesystem path candidates based on the current buffer.
@@ -70,9 +69,7 @@ pub fn query_paths(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate
         }
 
         // Prefix filter
-        if !prefix.is_empty()
-            && !name_str.to_ascii_lowercase().starts_with(&prefix_lower)
-        {
+        if !prefix.is_empty() && !name_str.to_ascii_lowercase().starts_with(&prefix_lower) {
             continue;
         }
 
