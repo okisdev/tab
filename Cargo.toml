@@ -3,7 +3,6 @@ members = [
     "crates/tab-core",
     "crates/tab-history",
     "crates/tab-daemon",
-    "crates/tab-overlay",
     "crates/tab-cli",
 ]
 resolver = "2"
