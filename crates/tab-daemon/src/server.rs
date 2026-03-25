@@ -107,15 +107,20 @@ async fn handle_query(req: QueryRequest, state: &Arc<Mutex<DaemonState>>) -> Que
     };
 
     let script_candidates = crate::scripts::query_scripts(&req.buffer, &req.cwd, MAX_CANDIDATES);
-    let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
+
+    // For path commands (cd, ls, etc.), only show filesystem candidates — no history noise
+    if crate::paths::is_path_command(&req.buffer) {
+        let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
+        let candidates = merge_candidates(script_candidates, path_candidates, MAX_CANDIDATES);
+        return QueryResponse { candidates };
+    }
+
     let history_candidates =
         state
             .history
             .query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
 
-    // Merge: scripts first, then history, then paths (filesystem is fallback)
-    let top = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);
-    let candidates = merge_candidates(top, path_candidates, MAX_CANDIDATES);
+    let candidates = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);
 
     QueryResponse { candidates }
 }

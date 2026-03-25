@@ -90,6 +90,15 @@ pub fn query_paths(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate
     candidates
 }
 
+/// Returns true when the buffer starts with a recognized path command (e.g. "cd ", "ls foo").
+pub fn is_path_command(buffer: &str) -> bool {
+    if let Some((cmd, _)) = split_command(buffer) {
+        DIR_COMMANDS.contains(&cmd) || FILE_COMMANDS.contains(&cmd)
+    } else {
+        false
+    }
+}
+
 /// Split buffer into (command, partial_path).
 /// "cd scripts/st" → Some(("cd", "scripts/st"))
 /// "cd " → Some(("cd", ""))
