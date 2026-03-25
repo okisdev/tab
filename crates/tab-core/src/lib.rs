@@ -1,5 +1,8 @@
+pub mod config;
+pub mod logging;
 pub mod protocol;
 pub mod socket;
 
+pub use config::Config;
 pub use protocol::*;
-pub use socket::{socket_dir, shell_socket_path, overlay_socket_path};
+pub use socket::{shell_socket_path, socket_dir};

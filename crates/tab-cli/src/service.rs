@@ -172,10 +172,10 @@ fn generate_plist(daemon_path: &std::path::Path, log_dir: &std::path::Path) -> S
     <true/>
 
     <key>StandardOutPath</key>
-    <string>{log_str}/daemon.out.log</string>
+    <string>{log_str}/daemon-crash.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{log_str}/daemon.err.log</string>
+    <string>{log_str}/daemon-crash.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

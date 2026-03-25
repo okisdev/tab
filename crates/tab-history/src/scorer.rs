@@ -21,6 +21,10 @@ struct CommandMeta {
     _directories: Vec<String>,
 }
 
+/// Skip history entries longer than this — they're almost certainly
+/// build logs or other non-command output captured into history.
+const MAX_COMMAND_LEN: usize = 200;
+
 // Scoring weights
 const W_FUZZY: f64 = 0.40;
 const W_FREQUENCY: f64 = 0.25;
@@ -36,6 +40,10 @@ impl HistoryIndex {
         let mut freq_map: HashMap<String, (u32, i64)> = HashMap::new();
 
         for entry in entries {
+            // Skip absurdly long entries (build logs, etc.)
+            if entry.command.len() > MAX_COMMAND_LEN {
+                continue;
+            }
             let e = freq_map
                 .entry(entry.command.clone())
                 .or_insert((0, 0));
@@ -62,10 +70,13 @@ impl HistoryIndex {
     }
 
     /// Query the index and return ranked candidates.
-    pub fn query(&mut self, query: &str, cwd: &str, max_results: usize) -> Vec<Candidate> {
+    /// `match_mode`: "prefix" = only prefix matches, "fuzzy" (default) = fuzzy + prefix bonus.
+    pub fn query(&mut self, query: &str, cwd: &str, max_results: usize, match_mode: &str) -> Vec<Candidate> {
         if query.is_empty() {
             return self.recent_commands(max_results);
         }
+
+        let is_prefix_mode = match_mode == "prefix";
 
         let pattern = Atom::new(
             query,
@@ -87,10 +98,19 @@ impl HistoryIndex {
             .max()
             .unwrap_or(1) as f64;
 
+        let query_lower = query.to_ascii_lowercase();
         let mut scored: Vec<(usize, f64, Vec<u32>)> = Vec::new();
         let mut buf = Vec::new();
 
         for (i, cmd) in self.commands.iter().enumerate() {
+            let is_prefix = cmd.command.starts_with(query)
+                || cmd.command.to_ascii_lowercase().starts_with(&query_lower);
+
+            // In prefix mode, skip non-prefix matches entirely
+            if is_prefix_mode && !is_prefix {
+                continue;
+            }
+
             let haystack = Utf32Str::new(&cmd.command, &mut buf);
             let mut indices = Vec::new();
             if let Some(fuzzy_score) = pattern.indices(haystack, &mut self.matcher, &mut indices) {
@@ -101,14 +121,16 @@ impl HistoryIndex {
                 let days_ago = ((now - cmd.last_used) as f64) / 86400.0;
                 let recency_score = (-RECENCY_LAMBDA * days_ago).exp();
 
-                // TODO: context scoring when directory tracking is implemented
                 let _ = cwd;
                 let context_score = 0.0_f64;
+
+                let prefix_bonus = if is_prefix { 0.5 } else { 0.0 };
 
                 let total = fuzzy_norm * W_FUZZY
                     + freq_score * W_FREQUENCY
                     + recency_score * W_RECENCY
-                    + context_score * W_CONTEXT;
+                    + context_score * W_CONTEXT
+                    + prefix_bonus;
 
                 let match_positions: Vec<u32> = indices.to_vec();
                 scored.push((i, total, match_positions));
@@ -209,7 +231,7 @@ mod tests {
     fn fuzzy_match_git() {
         let entries = make_entries();
         let mut index = HistoryIndex::from_entries(&entries);
-        let results = index.query("gst", "", 10);
+        let results = index.query("gst", "", 10, "fuzzy");
         assert!(!results.is_empty());
         // "git status" should rank high for "gst"
         assert!(results[0].text.contains("git"));
@@ -219,7 +241,7 @@ mod tests {
     fn empty_query_returns_recent() {
         let entries = make_entries();
         let mut index = HistoryIndex::from_entries(&entries);
-        let results = index.query("", "", 3);
+        let results = index.query("", "", 3, "fuzzy");
         assert_eq!(results.len(), 3);
         // Most recent should be first
         assert_eq!(results[0].text, "ls -la");
@@ -229,7 +251,7 @@ mod tests {
     fn no_match_returns_empty() {
         let entries = make_entries();
         let mut index = HistoryIndex::from_entries(&entries);
-        let results = index.query("zzzznotexist", "", 10);
+        let results = index.query("zzzznotexist", "", 10, "fuzzy");
         assert!(results.is_empty());
     }
 }

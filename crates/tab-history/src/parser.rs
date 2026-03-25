@@ -8,7 +8,8 @@ use std::path::Path;
 /// Format: `: <timestamp>:<duration>;<command>`
 /// Multi-line commands use `\` continuation.
 pub fn parse_zsh_history(path: &Path) -> Result<Vec<HistoryEntry>> {
-    let content = fs::read_to_string(path)?;
+    let bytes = fs::read(path)?;
+    let content = String::from_utf8_lossy(&bytes);
     Ok(parse_zsh_history_str(&content))
 }
 
