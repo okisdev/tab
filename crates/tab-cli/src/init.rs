@@ -91,10 +91,12 @@ __tab_render() {
     done
     zle -M "$msg"
 
-    # Ghost text: show remainder of selected candidate after cursor
+    # Ghost text: show remainder of selected candidate after cursor (dim)
     local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
+    region_highlight=("${(@)region_highlight:#P*}")
     if [[ "$selected" == "$BUFFER"* ]]; then
         POSTDISPLAY="${selected#$BUFFER}"
+        [[ -n "$POSTDISPLAY" ]] && region_highlight+=("P0 ${#POSTDISPLAY} fg=8")
     else
         POSTDISPLAY=""
     fi
