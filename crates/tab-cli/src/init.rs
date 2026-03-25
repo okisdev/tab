@@ -29,7 +29,7 @@ __tab_sources=()
 __tab_start_coproc() {
     if [[ -z "${__tab_coproc_pid:-}" ]] || ! kill -0 "$__tab_coproc_pid" 2>/dev/null; then
         setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
-        coproc "$__tab_bin" hook 2>/dev/null
+        coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null
         __tab_coproc_pid=$!
     fi
 }
