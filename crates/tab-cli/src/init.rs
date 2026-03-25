@@ -18,113 +18,119 @@ const ZSH_INIT: &str = r#"
 # tab - terminal autocomplete plugin
 # Add to .zshrc: eval "$(tab init zsh)"
 
-# ── State ──
-
-__tab_sid="tab-$$-$(date +%s)"
 __tab_bin="${commands[tab]:-tab}"
 __tab_selected=0
 __tab_active=0
+__tab_candidates=()
+__tab_sources=()
 
-# ── Coprocess management ──
+# ── Coprocess ──
 
 __tab_start_coproc() {
     if [[ -z "${__tab_coproc_pid:-}" ]] || ! kill -0 "$__tab_coproc_pid" 2>/dev/null; then
-        coproc "$__tab_bin" hook --shell zsh --session "$__tab_sid" 2>/dev/null
+        setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
+        coproc "$__tab_bin" hook 2>/dev/null
         __tab_coproc_pid=$!
     fi
 }
 
-# Send message (fire-and-forget, no response expected)
-__tab_send() {
-    __tab_start_coproc
-    if ! print -p -- "$1" 2>/dev/null; then
-        # Coprocess died, restart and retry once
-        __tab_coproc_pid=""
-        __tab_start_coproc
-        print -p -- "$1" 2>/dev/null
-    fi
-}
-
-# Send message and read response (blocking with timeout)
 __tab_send_recv() {
     __tab_start_coproc
     __tab_response=""
-    if ! print -p -- "$1" 2>/dev/null; then
+    # Drain stale responses from the pipe (user typed faster than daemon responded)
+    while read -t 0 -p __tab_discard 2>/dev/null; do :; done
+    if print -p -- "$1" 2>/dev/null; then
+        read -t 0.2 -p __tab_response 2>/dev/null
+    else
         __tab_coproc_pid=""
         __tab_start_coproc
-        print -p -- "$1" 2>/dev/null || return 1
+        print -p -- "$1" 2>/dev/null && read -t 0.2 -p __tab_response 2>/dev/null
     fi
-    read -t 0.1 -p __tab_response 2>/dev/null
 }
 
-# ── JSON helpers (pure zsh, no python) ──
+# ── Parse response into candidates array ──
 
-# Extract a string value for a given key from flat JSON
-__tab_json_get() {
-    local json="$1" key="$2"
-    # Match "key":"value" or "key":number
-    if [[ "$json" =~ \"$key\":\"([^\"]*)\" ]]; then
-        echo "${match[1]}"
-    elif [[ "$json" =~ \"$key\":([0-9]+) ]]; then
-        echo "${match[1]}"
+__tab_parse() {
+    __tab_candidates=()
+    __tab_sources=()
+    [[ -z "$__tab_response" ]] && return 1
+
+    local _sep=$'\x1f'
+    local -a entries=("${(@ps.$_sep.)__tab_response}")
+
+    local entry
+    for entry in "${entries[@]}"; do
+        [[ -z "$entry" ]] && continue
+        __tab_sources+=("${entry[1]}")
+        __tab_candidates+=("${entry[3,-1]}")
+    done
+    (( ${#__tab_candidates[@]} > 0 ))
+}
+
+# ── Render candidates via zle -M + ghost text via POSTDISPLAY ──
+
+__tab_render() {
+    local n=${#__tab_candidates[@]}
+    if (( n == 0 )); then
+        POSTDISPLAY=""
+        return
+    fi
+
+    # Candidate list below prompt
+    local msg="" i icon
+    for (( i = 1; i <= n; i++ )); do
+        case "${__tab_sources[$i]}" in
+            H) icon="🕘" ;; S) icon="⚡" ;; B) icon="⚡🕘" ;; *) icon="📁" ;;
+        esac
+        if (( i - 1 == __tab_selected )); then
+            msg+=" ▸ $icon ${__tab_candidates[$i]}"
+        else
+            msg+="   $icon ${__tab_candidates[$i]}"
+        fi
+        (( i < n )) && msg+=$'\n'
+    done
+    zle -M "$msg"
+
+    # Ghost text: show remainder of selected candidate after cursor
+    local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
+    if [[ "$selected" == "$BUFFER"* ]]; then
+        POSTDISPLAY="${selected#$BUFFER}"
+    else
+        POSTDISPLAY=""
     fi
 }
 
 # ── Core actions ──
 
-# Notify daemon of buffer change (fire-and-forget)
 __tab_update() {
-    [[ -z "$BUFFER" ]] && {
-        __tab_active=0
-        __tab_send "{\"type\":\"dismiss\",\"session_id\":\"$__tab_sid\"}"
-        return
-    }
+    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); POSTDISPLAY=""; return; }
     __tab_active=1
     __tab_selected=0
     local buf="${BUFFER//\\/\\\\}"
     buf="${buf//\"/\\\"}"
     local cwd="${PWD//\\/\\\\}"
     cwd="${cwd//\"/\\\"}"
-    __tab_send "{\"type\":\"context\",\"session_id\":\"$__tab_sid\",\"shell\":\"zsh\",\"buffer\":\"$buf\",\"cursor_pos\":$CURSOR,\"cwd\":\"$cwd\",\"columns\":$COLUMNS,\"lines\":$LINES}"
+    __tab_send_recv "{\"buffer\":\"$buf\",\"cwd\":\"$cwd\"}"
+    if __tab_parse; then
+        __tab_render
+    else
+        __tab_active=0
+    fi
 }
 
-# Accept the currently selected completion
 __tab_accept() {
     (( __tab_active )) || { zle expand-or-complete; return; }
-    __tab_send_recv "{\"type\":\"accept\",\"session_id\":\"$__tab_sid\",\"index\":$__tab_selected}"
-    if [[ -n "$__tab_response" ]]; then
-        local text=$(__tab_json_get "$__tab_response" "text")
-        if [[ -n "$text" ]]; then
-            BUFFER="$text"
-            CURSOR=${#BUFFER}
-            __tab_active=0
-            __tab_selected=0
-            zle redisplay
-            return
-        fi
+    local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
+    if [[ -n "$text" ]]; then
+        BUFFER="$text"
+        CURSOR=${#BUFFER}
+        POSTDISPLAY=""  # clear autosuggestions ghost text
     fi
-    # Fallback to default tab completion if no match
-    zle expand-or-complete
-}
-
-# Navigate candidates
-__tab_navigate() {
-    (( __tab_active )) || return
-    __tab_send_recv "{\"type\":\"navigate\",\"session_id\":\"$__tab_sid\",\"direction\":\"$1\"}"
-    if [[ -n "$__tab_response" ]]; then
-        local sel=$(__tab_json_get "$__tab_response" "selected")
-        [[ -n "$sel" ]] && __tab_selected=$sel
-    fi
-}
-
-# Dismiss popup
-__tab_dismiss() {
     __tab_active=0
-    __tab_selected=0
-    __tab_send "{\"type\":\"dismiss\",\"session_id\":\"$__tab_sid\"}"
+    __tab_candidates=()
 }
 
-# ── ZLE widget wrappers ──
+# ── Widget wrappers ──
 
 __tab_wrap_widget() {
     local widget="$1"
@@ -138,54 +144,61 @@ __tab_wrap_widget() {
     "
 }
 
-# Wrap standard editing widgets
 __tab_wrap_widget self-insert
 __tab_wrap_widget backward-delete-char
 __tab_wrap_widget delete-char
-__tab_wrap_widget kill-word
 __tab_wrap_widget backward-kill-word
-__tab_wrap_widget yank
 __tab_wrap_widget kill-line
-__tab_wrap_widget backward-kill-line
+__tab_wrap_widget kill-word
 
-# Accept widget (Tab)
+# Tab: accept selected candidate
 __tab_accept_widget() { __tab_accept; }
 zle -N __tab_accept_widget
+bindkey '^I' __tab_accept_widget
 
-# Navigate up (Ctrl+P)
-__tab_nav_up_widget() { __tab_navigate up; }
-zle -N __tab_nav_up_widget
-
-# Navigate down (Ctrl+N)
-__tab_nav_down_widget() { __tab_navigate down; }
-zle -N __tab_nav_down_widget
-
-# Dismiss widget (Escape)
-__tab_dismiss_widget() {
-    if (( __tab_active )); then
-        __tab_dismiss
-        zle redisplay
+# Right arrow: accept selected candidate if active, otherwise normal movement
+__tab_forward_char() {
+    if [[ $CURSOR -eq ${#BUFFER} ]] && (( __tab_active )); then
+        __tab_accept
     else
-        zle send-break
+        zle .forward-char
     fi
 }
-zle -N __tab_dismiss_widget
+zle -N __tab_forward_char
+bindkey '\e[C' __tab_forward_char
+bindkey '\eOC' __tab_forward_char
 
-# ── Key bindings ──
+# Up/Down: navigate candidates (fall through to history if inactive)
+__tab_nav_up() {
+    if (( __tab_active )); then
+        (( __tab_selected > 0 )) && (( __tab_selected-- ))
+        __tab_render
+    else
+        zle up-line-or-history
+    fi
+}
+__tab_nav_down() {
+    if (( __tab_active )); then
+        (( __tab_selected < ${#__tab_candidates[@]} - 1 )) && (( __tab_selected++ ))
+        __tab_render
+    else
+        zle down-line-or-history
+    fi
+}
+zle -N __tab_nav_up
+zle -N __tab_nav_down
+bindkey '\e[A' __tab_nav_up
+bindkey '\e[B' __tab_nav_down
+bindkey '\eOA' __tab_nav_up
+bindkey '\eOB' __tab_nav_down
 
-bindkey '^I'  __tab_accept_widget      # Tab
-bindkey '^N'  __tab_nav_down_widget    # Ctrl+N
-bindkey '^P'  __tab_nav_up_widget     # Ctrl+P
-bindkey '\e'  __tab_dismiss_widget    # Escape
-
-# preexec: dismiss popup when a command runs
-__tab_preexec() { __tab_dismiss; }
+# preexec: reset
+__tab_preexec() { __tab_active=0; __tab_candidates=(); }
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec __tab_preexec
 
-# Cleanup on exit
+# Cleanup
 __tab_cleanup() {
-    __tab_dismiss
     [[ -n "${__tab_coproc_pid:-}" ]] && kill "$__tab_coproc_pid" 2>/dev/null
 }
 trap __tab_cleanup EXIT
