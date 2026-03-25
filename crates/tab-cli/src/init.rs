@@ -29,7 +29,7 @@ __tab_sources=()
 __tab_start_coproc() {
     if [[ -z "${__tab_coproc_pid:-}" ]] || ! kill -0 "$__tab_coproc_pid" 2>/dev/null; then
         setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
-        coproc "$__tab_bin" hook 2>/dev/null
+        coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null
         __tab_coproc_pid=$!
     fi
 }
@@ -103,7 +103,7 @@ __tab_render() {
 # ── Core actions ──
 
 __tab_update() {
-    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); POSTDISPLAY=""; return; }
+    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); POSTDISPLAY=""; zle -M ""; return; }
     __tab_active=1
     __tab_selected=0
     local buf="${BUFFER//\\/\\\\}"
@@ -115,6 +115,9 @@ __tab_update() {
         __tab_render
     else
         __tab_active=0
+        __tab_candidates=()
+        POSTDISPLAY=""
+        zle -M ""
     fi
 }
 
