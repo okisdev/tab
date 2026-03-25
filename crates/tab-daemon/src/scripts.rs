@@ -1,0 +1,120 @@
+use std::path::Path;
+
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+use tab_core::{Candidate, CandidateSource};
+
+/// Recognized package manager prefixes and how to form the full command.
+/// (buffer_prefix, command_prefix_for_candidate)
+const PM_PREFIXES: &[(&str, &str)] = &[
+    ("pnpm run ", "pnpm run "),
+    ("pnpm ", "pnpm "),
+    ("npm run ", "npm run "),
+    ("yarn run ", "yarn run "),
+    ("yarn ", "yarn "),
+    ("bun run ", "bun run "),
+    ("bun ", "bun "),
+];
+
+/// If the buffer looks like a package-manager invocation, return script
+/// candidates from `package.json` in `cwd`.
+pub fn query_scripts(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate> {
+    // Find which prefix matches
+    let (query, cmd_prefix) = match detect_prefix(buffer) {
+        Some(v) => v,
+        None => return vec![],
+    };
+
+    let scripts = read_scripts(cwd);
+    if scripts.is_empty() {
+        return vec![];
+    }
+
+    if query.is_empty() {
+        // No query yet — return all scripts (up to max)
+        return scripts
+            .into_iter()
+            .take(max_results)
+            .map(|name| Candidate {
+                text: format!("{cmd_prefix}{name}"),
+                score: 1.0,
+                match_positions: vec![],
+                source: CandidateSource::Script,
+            })
+            .collect();
+    }
+
+    // Fuzzy match
+    let pattern = Atom::new(
+        query,
+        CaseMatching::Smart,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(String, f64, Vec<u32>)> = Vec::new();
+
+    for name in &scripts {
+        let haystack = Utf32Str::new(name, &mut buf);
+        let mut indices = Vec::new();
+        if let Some(score) = pattern.indices(haystack, &mut matcher, &mut indices) {
+            scored.push((name.clone(), score as f64, indices));
+        }
+        buf.clear();
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(max_results);
+
+    scored
+        .into_iter()
+        .map(|(name, score, positions)| {
+            let prefix_len = cmd_prefix.len() as u32;
+            Candidate {
+                text: format!("{cmd_prefix}{name}"),
+                score,
+                // Shift match positions by prefix length so highlighting is correct
+                match_positions: positions.iter().map(|p| p + prefix_len).collect(),
+                source: CandidateSource::Script,
+            }
+        })
+        .collect()
+}
+
+/// Detect if `buffer` starts with a known package manager prefix.
+/// Returns `(script_query, command_prefix)`.
+fn detect_prefix(buffer: &str) -> Option<(&str, &str)> {
+    // Try longer prefixes first (e.g. "pnpm run " before "pnpm ")
+    for &(buf_prefix, cmd_prefix) in PM_PREFIXES {
+        if let Some(rest) = buffer.strip_prefix(buf_prefix) {
+            // Only match if the rest doesn't contain spaces (we're completing the script name)
+            if !rest.contains(' ') {
+                return Some((rest, cmd_prefix));
+            }
+        }
+    }
+    None
+}
+
+/// Read script names from package.json in the given directory.
+fn read_scripts(cwd: &str) -> Vec<String> {
+    let pkg_path = Path::new(cwd).join("package.json");
+    let content = match std::fs::read_to_string(&pkg_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    let Some(scripts) = json.get("scripts").and_then(|s| s.as_object()) else {
+        return vec![];
+    };
+
+    scripts.keys().cloned().collect()
+}
