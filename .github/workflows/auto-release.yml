@@ -1,0 +1,208 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    # Skip version bump commits from this workflow (pushed with GITHUB_TOKEN, so
+    # normally won't re-trigger — this is a safety net)
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: bump
+        run: |
+          LATEST=$(git tag -l 'v*' | sort -V | tail -1)
+          [ -z "$LATEST" ] && LATEST="v0.0.0"
+
+          VERSION=${LATEST#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # feat: commit since last tag → minor bump, otherwise patch
+          if git log "${LATEST}..HEAD" --pretty=format:"%s" | grep -qE '^feat(\(.+\))?:'; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump version, commit and tag
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.bump.outputs.version }}"/' Cargo.toml
+          cargo check --quiet 2>/dev/null || true  # updates Cargo.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin master --tags
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            arch: arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            arch: amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../tab_${{ needs.version.outputs.tag }}_darwin_${{ matrix.arch }}.tar.gz tab tab-daemon
+          cd ../../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tab-darwin-${{ matrix.arch }}
+          path: tab_*.tar.gz
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum tab_*.tar.gz > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          files: |
+            tab_*.tar.gz
+            checksums.txt
+          generate_release_notes: true
+
+  update-homebrew:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate Homebrew formula
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          SHA_ARM64=$(sha256sum tab_${TAG}_darwin_arm64.tar.gz | awk '{print $1}')
+          SHA_AMD64=$(sha256sum tab_${TAG}_darwin_amd64.tar.gz | awk '{print $1}')
+
+          cat > tab.rb << FORMULA
+          class Tab < Formula
+            desc "Terminal autocomplete plugin with fuzzy history matching"
+            homepage "https://github.com/okisdev/tab"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/okisdev/tab/releases/download/${TAG}/tab_${TAG}_darwin_arm64.tar.gz"
+                sha256 "${SHA_ARM64}"
+              end
+              if Hardware::CPU.intel?
+                url "https://github.com/okisdev/tab/releases/download/${TAG}/tab_${TAG}_darwin_amd64.tar.gz"
+                sha256 "${SHA_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "tab"
+              bin.install "tab-daemon"
+            end
+
+            def caveats
+              <<~EOS
+                To activate tab, add to your ~/.zshrc:
+                  eval "\\\$(tab init zsh)"
+
+                Then install the background service:
+                  tab install
+              EOS
+            end
+
+            service do
+              run [opt_bin/"tab-daemon"]
+              keep_alive true
+              log_path var/"log/tab/daemon.log"
+              error_log_path var/"log/tab/daemon.err.log"
+            end
+
+            test do
+              assert_match "tab", shell_output("\#{bin}/tab --help")
+            end
+          end
+          FORMULA
+
+          # Fix indentation
+          sed -i 's/^          //' tab.rb
+
+      - name: Push to Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone https://x-access-token:${GH_TOKEN}@github.com/okisdev/homebrew-tap.git tap
+          cp tab.rb tap/Formula/tab.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/tab.rb
+          git commit -m "Update tab to ${TAG}"
+          git push
