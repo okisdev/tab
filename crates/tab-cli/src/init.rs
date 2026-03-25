@@ -23,6 +23,7 @@ __tab_selected=0
 __tab_active=0
 __tab_candidates=()
 __tab_sources=()
+__tab_highlight=""
 
 # ── Coprocess ──
 
@@ -67,11 +68,21 @@ __tab_parse() {
     (( ${#__tab_candidates[@]} > 0 ))
 }
 
+# ── Highlight helper ──
+
+__tab_clear_highlight() {
+    if [[ -n "$__tab_highlight" ]]; then
+        region_highlight=("${(@)region_highlight:#$__tab_highlight}")
+        __tab_highlight=""
+    fi
+}
+
 # ── Render candidates via zle -M + ghost text via POSTDISPLAY ──
 
 __tab_render() {
     local n=${#__tab_candidates[@]}
     if (( n == 0 )); then
+        __tab_clear_highlight
         POSTDISPLAY=""
         return
     fi
@@ -93,10 +104,13 @@ __tab_render() {
 
     # Ghost text: show remainder of selected candidate after cursor (dim)
     local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
-    region_highlight=("${(@)region_highlight:#P*}")
+    __tab_clear_highlight
     if [[ "$selected" == "$BUFFER"* ]]; then
         POSTDISPLAY="${selected#$BUFFER}"
-        [[ -n "$POSTDISPLAY" ]] && region_highlight+=("P0 ${#POSTDISPLAY} fg=8")
+        if [[ -n "$POSTDISPLAY" ]]; then
+            __tab_highlight="${#BUFFER} $(( ${#BUFFER} + ${#POSTDISPLAY} )) fg=8"
+            region_highlight+=("$__tab_highlight")
+        fi
     else
         POSTDISPLAY=""
     fi
@@ -105,7 +119,7 @@ __tab_render() {
 # ── Core actions ──
 
 __tab_update() {
-    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); POSTDISPLAY=""; zle -M ""; return; }
+    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); __tab_clear_highlight; POSTDISPLAY=""; zle -M ""; return; }
     __tab_active=1
     __tab_selected=0
     local buf="${BUFFER//\\/\\\\}"
@@ -118,6 +132,7 @@ __tab_update() {
     else
         __tab_active=0
         __tab_candidates=()
+        __tab_clear_highlight
         POSTDISPLAY=""
         zle -M ""
     fi
@@ -129,7 +144,8 @@ __tab_accept() {
     if [[ -n "$text" ]]; then
         BUFFER="$text"
         CURSOR=${#BUFFER}
-        POSTDISPLAY=""  # clear autosuggestions ghost text
+        __tab_clear_highlight
+        POSTDISPLAY=""
     fi
     __tab_active=0
     __tab_candidates=()
