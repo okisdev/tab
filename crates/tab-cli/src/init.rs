@@ -142,13 +142,14 @@ __tab_accept() {
     (( __tab_active )) || { zle expand-or-complete; return; }
     local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
     if [[ -n "$text" ]]; then
-        BUFFER="$text"
-        CURSOR=${#BUFFER}
         __tab_clear_highlight
         POSTDISPLAY=""
+        BUFFER="$text"
+        CURSOR=${#BUFFER}
     fi
     __tab_active=0
     __tab_candidates=()
+    zle -M ""
 }
 
 # ── Widget wrappers ──
