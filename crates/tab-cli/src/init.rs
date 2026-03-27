@@ -71,10 +71,13 @@ __tab_parse() {
 # ── Highlight helper ──
 
 __tab_clear_highlight() {
-    if [[ -n "$__tab_highlight" ]]; then
-        region_highlight=("${(@)region_highlight:#$__tab_highlight}")
-        __tab_highlight=""
-    fi
+    local -a _rh=()
+    local _e
+    for _e in "${(@)region_highlight}"; do
+        [[ "$_e" == *"memo=tab"* ]] || _rh+=("$_e")
+    done
+    region_highlight=("${_rh[@]}")
+    __tab_highlight=""
 }
 
 # ── Render candidates via zle -M + ghost text via POSTDISPLAY ──
@@ -108,7 +111,7 @@ __tab_render() {
     if [[ "$selected" == "$BUFFER"* ]]; then
         POSTDISPLAY="${selected#$BUFFER}"
         if [[ -n "$POSTDISPLAY" ]]; then
-            __tab_highlight="${#BUFFER} $(( ${#BUFFER} + ${#POSTDISPLAY} )) fg=8"
+            __tab_highlight="${#BUFFER} $(( ${#BUFFER} + ${#POSTDISPLAY} )) fg=8 memo=tab"
             region_highlight+=("$__tab_highlight")
         fi
     else
