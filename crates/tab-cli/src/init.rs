@@ -142,13 +142,14 @@ __tab_accept() {
     (( __tab_active )) || { zle expand-or-complete; return; }
     local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
     if [[ -n "$text" ]]; then
-        BUFFER="$text"
-        CURSOR=${#BUFFER}
         __tab_clear_highlight
         POSTDISPLAY=""
+        BUFFER="$text"
+        CURSOR=${#BUFFER}
     fi
     __tab_active=0
     __tab_candidates=()
+    zle -M ""
 }
 
 # ── Widget wrappers ──
@@ -212,6 +213,30 @@ bindkey '\e[A' __tab_nav_up
 bindkey '\e[B' __tab_nav_down
 bindkey '\eOA' __tab_nav_up
 bindkey '\eOB' __tab_nav_down
+
+# Enter: accept prediction if active, otherwise execute command
+__tab_enter() {
+    if (( __tab_active )); then
+        __tab_accept
+    else
+        zle accept-line
+    fi
+}
+zle -N __tab_enter
+bindkey '^M' __tab_enter
+
+# Escape: dismiss prediction if active
+__tab_dismiss() {
+    if (( __tab_active )); then
+        __tab_active=0
+        __tab_candidates=()
+        __tab_clear_highlight
+        POSTDISPLAY=""
+        zle -M ""
+    fi
+}
+zle -N __tab_dismiss
+bindkey '\e' __tab_dismiss
 
 # preexec: reset
 __tab_preexec() { __tab_active=0; __tab_candidates=(); }
