@@ -218,9 +218,13 @@ bindkey '\eOA' __tab_nav_up
 bindkey '\eOB' __tab_nav_down
 
 # Enter: accept prediction if active, otherwise execute command
+# If the selected prediction matches the buffer exactly, execute directly.
 __tab_enter() {
     if (( __tab_active )); then
+        local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
+        local buf="$BUFFER"
         __tab_accept
+        [[ "$text" == "$buf" ]] && zle accept-line
     else
         zle accept-line
     fi
