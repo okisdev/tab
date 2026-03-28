@@ -83,7 +83,7 @@ fn format_display(json: &str) -> String {
         let type_char = match c.source {
             CandidateSource::History => 'H',
             CandidateSource::Script => 'S',
-            CandidateSource::ScriptHistory => 'S',
+            CandidateSource::ScriptHistory => 'B',
             CandidateSource::Path => 'P',
         };
         let text = sanitize(&c.text);
