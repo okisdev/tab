@@ -115,15 +115,55 @@ fn extract_pm_script(command: &str) -> Option<&str> {
 
 /// Common PM built-in subcommands that are NOT script names.
 const PM_BUILTINS: &[&str] = &[
-    "install", "i", "ci", "add", "remove", "rm", "uninstall",
-    "update", "up", "list", "ls", "outdated", "audit",
-    "exec", "dlx", "create", "init", "publish", "pack",
-    "link", "unlink", "why", "prune", "rebuild",
-    "config", "login", "logout", "whoami",
-    "cache", "doctor", "dedupe", "help", "version",
-    "test", "t", "start", "stop", "restart",
-    "info", "view", "search", "bin", "root", "prefix",
-    "store", "setup", "import", "patch", "deploy",
+    "install",
+    "i",
+    "ci",
+    "add",
+    "remove",
+    "rm",
+    "uninstall",
+    "update",
+    "up",
+    "list",
+    "ls",
+    "outdated",
+    "audit",
+    "exec",
+    "dlx",
+    "create",
+    "init",
+    "publish",
+    "pack",
+    "link",
+    "unlink",
+    "why",
+    "prune",
+    "rebuild",
+    "config",
+    "login",
+    "logout",
+    "whoami",
+    "cache",
+    "doctor",
+    "dedupe",
+    "help",
+    "version",
+    "test",
+    "t",
+    "start",
+    "stop",
+    "restart",
+    "info",
+    "view",
+    "search",
+    "bin",
+    "root",
+    "prefix",
+    "store",
+    "setup",
+    "import",
+    "patch",
+    "deploy",
 ];
 
 /// Filter out history candidates that are PM script invocations for scripts
@@ -136,13 +176,14 @@ pub fn filter_irrelevant_pm_commands(candidates: Vec<Candidate>, cwd: &str) -> V
 
     let scripts = read_scripts(cwd);
 
-    candidates.into_iter().filter(|c| {
-        match extract_pm_script(&c.text) {
+    candidates
+        .into_iter()
+        .filter(|c| match extract_pm_script(&c.text) {
             Some(name) if PM_BUILTINS.contains(&name) => true,
             Some(name) => scripts.iter().any(|s| s == name),
             None => true,
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Read script names from package.json in the given directory.
