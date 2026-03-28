@@ -17,15 +17,14 @@ const PM_PREFIXES: &[(&str, &str)] = &[
 ];
 
 /// If the buffer looks like a package-manager invocation, return script
-/// candidates from `package.json` in `cwd`.
-pub fn query_scripts(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate> {
+/// candidates using pre-read scripts list.
+pub fn query_scripts_with(buffer: &str, scripts: &[String], max_results: usize) -> Vec<Candidate> {
     // Find which prefix matches
     let (query, cmd_prefix) = match detect_prefix(buffer) {
         Some(v) => v,
         None => return vec![],
     };
 
-    let scripts = read_scripts(cwd);
     if scripts.is_empty() {
         return vec![];
     }
@@ -33,7 +32,7 @@ pub fn query_scripts(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candida
     if query.is_empty() {
         // No query yet — return all scripts (up to max)
         return scripts
-            .into_iter()
+            .iter()
             .take(max_results)
             .map(|name| Candidate {
                 text: format!("{cmd_prefix}{name}"),
@@ -57,11 +56,11 @@ pub fn query_scripts(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candida
     let mut buf = Vec::new();
     let mut scored: Vec<(String, f64, Vec<u32>)> = Vec::new();
 
-    for name in &scripts {
+    for name in scripts {
         let haystack = Utf32Str::new(name, &mut buf);
         let mut indices = Vec::new();
         if let Some(score) = pattern.indices(haystack, &mut matcher, &mut indices) {
-            scored.push((name.clone(), score as f64, indices));
+            scored.push((name.to_string(), score as f64, indices));
         }
         buf.clear();
     }
@@ -167,14 +166,15 @@ const PM_BUILTINS: &[&str] = &[
 ];
 
 /// Filter out history candidates that are PM script invocations for scripts
-/// not present in the current directory's package.json.
-pub fn filter_irrelevant_pm_commands(candidates: Vec<Candidate>, cwd: &str) -> Vec<Candidate> {
-    let pkg_path = Path::new(cwd).join("package.json");
-    if !pkg_path.exists() {
+/// not present in the pre-read scripts list.
+pub fn filter_irrelevant_pm_commands_with(
+    candidates: Vec<Candidate>,
+    scripts: &[String],
+) -> Vec<Candidate> {
+    // If no scripts available, skip filtering (no package.json or no scripts section)
+    if scripts.is_empty() {
         return candidates;
     }
-
-    let scripts = read_scripts(cwd);
 
     candidates
         .into_iter()
@@ -187,7 +187,7 @@ pub fn filter_irrelevant_pm_commands(candidates: Vec<Candidate>, cwd: &str) -> V
 }
 
 /// Read script names from package.json in the given directory.
-fn read_scripts(cwd: &str) -> Vec<String> {
+pub fn read_scripts(cwd: &str) -> Vec<String> {
     let pkg_path = Path::new(cwd).join("package.json");
     let content = match std::fs::read_to_string(&pkg_path) {
         Ok(c) => c,

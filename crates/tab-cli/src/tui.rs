@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -156,16 +155,19 @@ fn render(tty: &mut std::fs::File, state: &State) {
 }
 
 fn render_highlighted_text(out: &mut String, text: &str, positions: &[u32], selected: bool) {
-    let pos_set: HashSet<u32> = positions.iter().copied().collect();
+    // Sorted positions allow binary search — faster than HashSet for small N
+    let mut sorted_pos: Vec<u32> = positions.to_vec();
+    sorted_pos.sort_unstable();
 
     for (i, ch) in text.chars().enumerate() {
+        let is_match = sorted_pos.binary_search(&(i as u32)).is_ok();
         if selected {
-            if pos_set.contains(&(i as u32)) {
+            if is_match {
                 out.push_str("\x1b[97;1m"); // bright white bold
             } else {
                 out.push_str("\x1b[37m"); // white
             }
-        } else if pos_set.contains(&(i as u32)) {
+        } else if is_match {
             out.push_str("\x1b[33m"); // yellow
         } else {
             out.push_str("\x1b[90m"); // gray

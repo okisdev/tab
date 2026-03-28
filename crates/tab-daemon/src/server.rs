@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use tab_core::{socket_dir, Candidate, CandidateSource, QueryRequest, QueryResponse};
 use tab_history::{HistoryIndex, HistoryWatcher};
@@ -12,6 +12,7 @@ const MAX_CANDIDATES: usize = 8;
 
 struct DaemonState {
     history: HistoryIndex,
+    config: tab_core::Config,
 }
 
 pub async fn run() -> Result<()> {
@@ -27,17 +28,22 @@ pub async fn run() -> Result<()> {
 
     let (watcher, history) = HistoryWatcher::new(&history_path)?;
 
-    let state = Arc::new(Mutex::new(DaemonState { history }));
+    let config = tab_core::Config::load();
+    let state = Arc::new(RwLock::new(DaemonState { history, config }));
 
-    // Periodic history reload
+    // Periodic history + config reload
     let reload_state = Arc::clone(&state);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
-            if let Some(new_index) = watcher.check_reload() {
-                reload_state.lock().await.history = new_index;
+            let new_index = watcher.check_reload();
+            let new_config = tab_core::Config::load();
+            let mut state = reload_state.write().await;
+            if let Some(idx) = new_index {
+                state.history = idx;
             }
+            state.config = new_config;
         }
     });
 
@@ -63,7 +69,7 @@ pub async fn run() -> Result<()> {
 
 async fn handle_connection(
     stream: tokio::net::UnixStream,
-    state: Arc<Mutex<DaemonState>>,
+    state: Arc<RwLock<DaemonState>>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -96,31 +102,37 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn handle_query(req: QueryRequest, state: &Arc<Mutex<DaemonState>>) -> QueryResponse {
-    let mut state = state.lock().await;
-
-    let match_mode = if req.match_mode.is_empty() {
-        let config = tab_core::Config::load();
-        config.completion.match_mode
-    } else {
-        req.match_mode.clone()
-    };
-
-    let script_candidates = crate::scripts::query_scripts(&req.buffer, &req.cwd, MAX_CANDIDATES);
+async fn handle_query(req: QueryRequest, state: &Arc<RwLock<DaemonState>>) -> QueryResponse {
+    // Perform all filesystem I/O before acquiring the lock
+    let scripts = crate::scripts::read_scripts(&req.cwd);
+    let script_candidates =
+        crate::scripts::query_scripts_with(&req.buffer, &scripts, MAX_CANDIDATES);
 
     // For path commands (cd, ls, etc.), only show filesystem candidates — no history noise
+    // No lock needed for this path.
     if crate::paths::is_path_command(&req.buffer) {
         let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
         let candidates = merge_candidates(script_candidates, path_candidates, MAX_CANDIDATES);
         return QueryResponse { candidates };
     }
 
+    // Only hold the lock for in-memory history query
+    let mut state = state.write().await;
+
+    let match_mode = if req.match_mode.is_empty() {
+        state.config.completion.match_mode.clone()
+    } else {
+        req.match_mode.clone()
+    };
+
     let history_candidates =
         state
             .history
             .query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
+    drop(state); // release lock before remaining CPU work
+
     let history_candidates =
-        crate::scripts::filter_irrelevant_pm_commands(history_candidates, &req.cwd);
+        crate::scripts::filter_irrelevant_pm_commands_with(history_candidates, &scripts);
 
     let candidates = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);
 

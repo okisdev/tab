@@ -11,10 +11,14 @@ pub struct HistoryIndex {
     commands: Vec<CommandMeta>,
     /// Reusable matcher
     matcher: Matcher,
+    /// Pre-computed ln(max_freq + 1) for scoring (avoids O(N) scan per query)
+    ln_max_freq: f64,
 }
 
 struct CommandMeta {
     command: String,
+    /// Pre-computed lowercase for prefix matching (avoids per-query allocation)
+    command_lower: String,
     frequency: u32,
     last_used: i64,
     /// Directories this command was run in (future use)
@@ -53,17 +57,24 @@ impl HistoryIndex {
 
         let commands: Vec<CommandMeta> = freq_map
             .into_iter()
-            .map(|(command, (frequency, last_used))| CommandMeta {
-                command,
-                frequency,
-                last_used,
-                _directories: Vec::new(),
+            .map(|(command, (frequency, last_used))| {
+                let command_lower = command.to_ascii_lowercase();
+                CommandMeta {
+                    command,
+                    command_lower,
+                    frequency,
+                    last_used,
+                    _directories: Vec::new(),
+                }
             })
             .collect();
+
+        let max_freq = commands.iter().map(|c| c.frequency).max().unwrap_or(1) as f64;
 
         HistoryIndex {
             commands,
             matcher: Matcher::new(Config::DEFAULT),
+            ln_max_freq: (max_freq + 1.0).ln(),
         }
     }
 
@@ -95,15 +106,13 @@ impl HistoryIndex {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let max_freq = self.commands.iter().map(|c| c.frequency).max().unwrap_or(1) as f64;
-
         let query_lower = query.to_ascii_lowercase();
         let mut scored: Vec<(usize, f64, Vec<u32>)> = Vec::new();
         let mut buf = Vec::new();
 
         for (i, cmd) in self.commands.iter().enumerate() {
-            let is_prefix = cmd.command.starts_with(query)
-                || cmd.command.to_ascii_lowercase().starts_with(&query_lower);
+            let is_prefix =
+                cmd.command.starts_with(query) || cmd.command_lower.starts_with(&query_lower);
 
             // In prefix mode, skip non-prefix matches entirely
             if is_prefix_mode && !is_prefix {
@@ -115,7 +124,7 @@ impl HistoryIndex {
             if let Some(fuzzy_score) = pattern.indices(haystack, &mut self.matcher, &mut indices) {
                 let fuzzy_norm = (fuzzy_score as f64) / (cmd.command.len() as f64 * 100.0 + 1.0);
 
-                let freq_score = (cmd.frequency as f64 + 1.0).ln() / (max_freq + 1.0).ln();
+                let freq_score = (cmd.frequency as f64 + 1.0).ln() / self.ln_max_freq;
 
                 let days_ago = ((now - cmd.last_used) as f64) / 86400.0;
                 let recency_score = (-RECENCY_LAMBDA * days_ago).exp();
