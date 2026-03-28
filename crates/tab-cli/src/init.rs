@@ -80,44 +80,61 @@ __tab_clear_highlight() {
     __tab_highlight=""
 }
 
-# ── Render candidates via zle -M + ghost text via POSTDISPLAY ──
+# ── Render via POSTDISPLAY + region_highlight (zle -M cannot do color) ──
 
 __tab_render() {
     local n=${#__tab_candidates[@]}
     if (( n == 0 )); then
         __tab_clear_highlight
         POSTDISPLAY=""
+        zle -M ""
         return
     fi
 
-    # Candidate list below prompt
-    local msg="" i icon
-    for (( i = 1; i <= n; i++ )); do
-        case "${__tab_sources[$i]}" in
-            H) icon="🕘" ;; S) icon="⚡" ;; B) icon="⚡🕘" ;; *) icon="📁" ;;
-        esac
-        local _cand="${__tab_candidates[$i]}"
-        if (( i - 1 == __tab_selected )); then
-            msg+=" ▸ $icon $_cand"
-        else
-            msg+="   $icon $_cand"
-        fi
-        (( i < n )) && msg+=$'\n'
-    done
-    zle -M "$msg"
-
-    # Ghost text: show remainder of selected candidate after cursor (dim)
-    local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
     __tab_clear_highlight
-    if [[ "$selected" == "$BUFFER"* ]]; then
-        POSTDISPLAY="${selected#$BUFFER}"
-        if [[ -n "$POSTDISPLAY" ]]; then
-            __tab_highlight="${#BUFFER} $(( ${#BUFFER} + ${#POSTDISPLAY} )) fg=8 memo=tab"
-            region_highlight+=("$__tab_highlight")
-        fi
-    else
-        POSTDISPLAY=""
+    zle -M ""
+
+    local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
+    local ghost=""
+    [[ "$selected" == "$BUFFER"* ]] && ghost="${selected#$BUFFER}"
+
+    # Build POSTDISPLAY = ghost text + candidate list
+    local post="$ghost"
+    local buf_len=${#BUFFER}
+
+    # Dim the ghost text
+    if [[ -n "$ghost" ]]; then
+        region_highlight+=("$buf_len $(( buf_len + ${#ghost} )) fg=8 memo=tab")
     fi
+
+    local i _cand icon prefix_str line
+    for (( i = 1; i <= n; i++ )); do
+        _cand="${__tab_candidates[$i]}"
+        case "${__tab_sources[$i]}" in
+            H) icon="🕘" ;; S|B) icon="⚡" ;; *) icon="📁" ;;
+        esac
+
+        if (( i - 1 == __tab_selected )); then
+            prefix_str=$'\n'" ▸ $icon "
+        else
+            prefix_str=$'\n'"   $icon "
+        fi
+        line="${prefix_str}${_cand}"
+
+        local line_start=$(( buf_len + ${#post} ))
+        post+="$line"
+
+        # Gray the predicted (non-typed) suffix of matching candidates
+        if [[ -n "$BUFFER" && "$_cand" == "$BUFFER"* ]]; then
+            local gray_start=$(( line_start + ${#prefix_str} + ${#BUFFER} ))
+            local gray_end=$(( line_start + ${#line} ))
+            if (( gray_start < gray_end )); then
+                region_highlight+=("$gray_start $gray_end fg=8 memo=tab")
+            fi
+        fi
+    done
+
+    POSTDISPLAY="$post"
 }
 
 # ── Core actions ──
