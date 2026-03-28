@@ -99,6 +99,52 @@ fn detect_prefix(buffer: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// Extract the script name from a completed PM command (e.g. "pnpm run dev --watch" → "dev").
+/// Returns None if the command doesn't look like a PM script invocation.
+fn extract_pm_script(command: &str) -> Option<&str> {
+    for &(prefix, _) in PM_PREFIXES {
+        if let Some(rest) = command.strip_prefix(prefix) {
+            let first_word = rest.split_whitespace().next().unwrap_or("");
+            if !first_word.is_empty() && !first_word.starts_with('-') {
+                return Some(first_word);
+            }
+        }
+    }
+    None
+}
+
+/// Common PM built-in subcommands that are NOT script names.
+const PM_BUILTINS: &[&str] = &[
+    "install", "i", "ci", "add", "remove", "rm", "uninstall",
+    "update", "up", "list", "ls", "outdated", "audit",
+    "exec", "dlx", "create", "init", "publish", "pack",
+    "link", "unlink", "why", "prune", "rebuild",
+    "config", "login", "logout", "whoami",
+    "cache", "doctor", "dedupe", "help", "version",
+    "test", "t", "start", "stop", "restart",
+    "info", "view", "search", "bin", "root", "prefix",
+    "store", "setup", "import", "patch", "deploy",
+];
+
+/// Filter out history candidates that are PM script invocations for scripts
+/// not present in the current directory's package.json.
+pub fn filter_irrelevant_pm_commands(candidates: Vec<Candidate>, cwd: &str) -> Vec<Candidate> {
+    let pkg_path = Path::new(cwd).join("package.json");
+    if !pkg_path.exists() {
+        return candidates;
+    }
+
+    let scripts = read_scripts(cwd);
+
+    candidates.into_iter().filter(|c| {
+        match extract_pm_script(&c.text) {
+            Some(name) if PM_BUILTINS.contains(&name) => true,
+            Some(name) => scripts.iter().any(|s| s == name),
+            None => true,
+        }
+    }).collect()
+}
+
 /// Read script names from package.json in the given directory.
 fn read_scripts(cwd: &str) -> Vec<String> {
     let pkg_path = Path::new(cwd).join("package.json");
