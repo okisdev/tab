@@ -176,7 +176,6 @@ pub fn filter_irrelevant_pm_commands_with(
         return candidates;
     }
 
-
     candidates
         .into_iter()
         .filter(|c| match extract_pm_script(&c.text) {

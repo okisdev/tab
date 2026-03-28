@@ -111,8 +111,8 @@ impl HistoryIndex {
         let mut buf = Vec::new();
 
         for (i, cmd) in self.commands.iter().enumerate() {
-            let is_prefix = cmd.command.starts_with(query)
-                || cmd.command_lower.starts_with(&query_lower);
+            let is_prefix =
+                cmd.command.starts_with(query) || cmd.command_lower.starts_with(&query_lower);
 
             // In prefix mode, skip non-prefix matches entirely
             if is_prefix_mode && !is_prefix {
