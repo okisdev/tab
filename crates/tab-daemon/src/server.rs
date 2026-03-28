@@ -119,6 +119,8 @@ async fn handle_query(req: QueryRequest, state: &Arc<Mutex<DaemonState>>) -> Que
         state
             .history
             .query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
+    let history_candidates =
+        crate::scripts::filter_irrelevant_pm_commands(history_candidates, &req.cwd);
 
     let candidates = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);
 

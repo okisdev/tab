@@ -91,15 +91,21 @@ __tab_render() {
     fi
 
     # Candidate list below prompt
-    local msg="" i icon
+    local msg="" i icon _dim=$'\e[38;5;8m' _rst=$'\e[0m'
     for (( i = 1; i <= n; i++ )); do
         case "${__tab_sources[$i]}" in
             H) icon="🕘" ;; S) icon="⚡" ;; B) icon="⚡🕘" ;; *) icon="📁" ;;
         esac
-        if (( i - 1 == __tab_selected )); then
-            msg+=" ▸ $icon ${__tab_candidates[$i]}"
+        local _cand="${__tab_candidates[$i]}" _disp
+        if [[ "$_cand" == "$BUFFER"* ]]; then
+            _disp="${BUFFER}${_dim}${_cand#$BUFFER}${_rst}"
         else
-            msg+="   $icon ${__tab_candidates[$i]}"
+            _disp="$_cand"
+        fi
+        if (( i - 1 == __tab_selected )); then
+            msg+=" ▸ $icon $_disp"
+        else
+            msg+="   $icon $_disp"
         fi
         (( i < n )) && msg+=$'\n'
     done
