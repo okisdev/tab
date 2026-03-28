@@ -84,8 +84,26 @@ pub fn query_paths(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate
         });
     }
 
-    // Sort alphabetically, then truncate
-    candidates.sort_by(|a, b| a.text.cmp(&b.text));
+    // Sort: exact prefix match first, then alphabetically
+    let exact_suffix = if prefix.is_empty() {
+        None
+    } else {
+        Some(format!("{cmd} {dir_part}{prefix}"))
+    };
+    candidates.sort_by(|a, b| {
+        if let Some(ref ex) = exact_suffix {
+            let a_exact = a.text.starts_with(ex.as_str()) && a.text[ex.len()..].starts_with('/');
+            let b_exact = b.text.starts_with(ex.as_str()) && b.text[ex.len()..].starts_with('/');
+            if a_exact != b_exact {
+                return if a_exact {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+        }
+        a.text.cmp(&b.text)
+    });
     candidates.truncate(max_results);
     candidates
 }
