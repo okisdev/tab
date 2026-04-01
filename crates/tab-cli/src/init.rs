@@ -193,6 +193,8 @@ __tab_wrap_widget delete-char
 __tab_wrap_widget backward-kill-word
 __tab_wrap_widget kill-line
 __tab_wrap_widget kill-word
+__tab_wrap_widget bracketed-paste
+__tab_wrap_widget yank
 
 # Tab: accept selected candidate
 __tab_accept_widget() { __tab_accept; }
