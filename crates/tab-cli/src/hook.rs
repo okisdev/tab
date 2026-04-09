@@ -3,7 +3,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use tab_core::{CandidateSource, QueryResponse};
+use tab_core::{CandidateSource, QueryRequest, QueryResponse};
 
 /// Run in hook/coprocess mode: bridge stdin/stdout to daemon.
 ///
@@ -48,6 +48,13 @@ fn run_session() -> Result<()> {
             continue;
         }
 
+        // Extract the request buffer so we can echo it back for correlation.
+        // If the request is malformed, skip it — zsh will time out and reset.
+        let req_buffer = match serde_json::from_str::<QueryRequest>(trimmed) {
+            Ok(req) => req.buffer,
+            Err(_) => continue,
+        };
+
         // Forward to daemon
         daemon_writer.write_all(trimmed.as_bytes())?;
         daemon_writer.write_all(b"\n")?;
@@ -57,12 +64,14 @@ fn run_session() -> Result<()> {
         daemon_line.clear();
         match daemon_reader.read_line(&mut daemon_line) {
             Ok(n) if n > 0 => {
-                let output = format_display(daemon_line.trim());
+                let output = format_display(&req_buffer, daemon_line.trim());
                 stdout.write_all(output.as_bytes())?;
                 stdout.write_all(b"\n")?;
                 stdout.flush()?;
             }
             _ => {
+                // Echo the buffer even on error so zsh can drop this response cleanly
+                stdout.write_all(sanitize(&req_buffer).as_bytes())?;
                 stdout.write_all(b"\n")?;
                 stdout.flush()?;
             }
@@ -70,15 +79,17 @@ fn run_session() -> Result<()> {
     }
 }
 
-/// Format daemon response as \x1f-separated entries.
-/// Each entry: "TYPE TEXT" where TYPE is H/S/B/P.
-fn format_display(json: &str) -> String {
+/// Format daemon response as \x1f-separated fields.
+/// First field echoes the request buffer (for stale-response detection).
+/// Remaining fields: "TYPE TEXT" where TYPE is H/S/B/P.
+fn format_display(req_buffer: &str, json: &str) -> String {
     let resp: QueryResponse = match serde_json::from_str(json) {
         Ok(r) => r,
-        Err(_) => return String::new(),
+        Err(_) => return sanitize(req_buffer),
     };
 
-    let mut entries = Vec::new();
+    let mut parts = Vec::with_capacity(resp.candidates.len() + 1);
+    parts.push(sanitize(req_buffer));
     for c in &resp.candidates {
         let type_char = match c.source {
             CandidateSource::History => 'H',
@@ -87,14 +98,48 @@ fn format_display(json: &str) -> String {
             CandidateSource::Path => 'P',
         };
         let text = sanitize(&c.text);
-        entries.push(format!("{type_char} {text}"));
+        parts.push(format!("{type_char} {text}"));
     }
 
-    entries.join("\x1f")
+    parts.join("\x1f")
 }
 
 fn sanitize(text: &str) -> String {
-    text.replace('\n', " ").replace('\r', "").replace('\t', " ")
+    text.replace('\r', "").replace(['\n', '\t', '\x1f'], " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_display_prepends_buffer_echo() {
+        let json = r#"{"candidates":[{"text":"cd foo/","score":0.9,"match_positions":[],"source":"history"}]}"#;
+        let out = format_display("cd", json);
+        let parts: Vec<&str> = out.split('\x1f').collect();
+        assert_eq!(parts[0], "cd");
+        assert_eq!(parts[1], "H cd foo/");
+    }
+
+    #[test]
+    fn format_display_empty_candidates_still_echoes_buffer() {
+        let json = r#"{"candidates":[]}"#;
+        let out = format_display("cd", json);
+        assert_eq!(out, "cd");
+    }
+
+    #[test]
+    fn format_display_bad_json_still_echoes_buffer() {
+        let out = format_display("cd", "not json");
+        assert_eq!(out, "cd");
+    }
+
+    #[test]
+    fn sanitize_strips_field_separator() {
+        // A \x1f in the buffer would break correlation — it must be neutralized.
+        assert_eq!(sanitize("a\x1fb"), "a b");
+        assert_eq!(sanitize("a\nb"), "a b");
+    }
 }
 
 fn connect_with_retry(path: &std::path::Path, max_attempts: u32) -> Result<UnixStream> {
