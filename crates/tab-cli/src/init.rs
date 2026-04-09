@@ -36,17 +36,30 @@ __tab_start_coproc() {
 }
 
 __tab_send_recv() {
+    # $1 = request JSON, $2 = expected buffer (echoed by daemon for correlation)
     __tab_start_coproc
     __tab_response=""
     # Drain stale responses from the pipe (user typed faster than daemon responded)
     while read -t 0 -p __tab_discard 2>/dev/null; do :; done
-    if print -p -- "$1" 2>/dev/null; then
-        read -t 0.2 -p __tab_response 2>/dev/null
-    else
+    if ! print -p -- "$1" 2>/dev/null; then
         __tab_coproc_pid=""
         __tab_start_coproc
-        print -p -- "$1" 2>/dev/null && read -t 0.2 -p __tab_response 2>/dev/null
+        print -p -- "$1" 2>/dev/null || return
     fi
+    # Read until the echoed buffer matches, or timeout. A mismatch means we
+    # caught a stale response from a previous request whose read had timed out.
+    local _resp _sep=$'\x1f' _echo _attempt=0
+    while (( _attempt < 3 )); do
+        (( _attempt++ ))
+        if ! read -t 0.2 -p _resp 2>/dev/null; then
+            return
+        fi
+        _echo="${_resp%%$_sep*}"
+        if [[ "$_echo" == "$2" ]]; then
+            __tab_response="$_resp"
+            return
+        fi
+    done
 }
 
 # ── Parse response into candidates array ──
@@ -59,8 +72,10 @@ __tab_parse() {
     local _sep=$'\x1f'
     local -a entries=("${(@ps.$_sep.)__tab_response}")
 
-    local entry
-    for entry in "${entries[@]}"; do
+    # entries[1] is the buffer echo, already validated in __tab_send_recv.
+    local i entry
+    for (( i = 2; i <= ${#entries[@]}; i++ )); do
+        entry="${entries[$i]}"
         [[ -z "$entry" ]] && continue
         __tab_sources+=("${entry[1]}")
         __tab_candidates+=("${entry[3,-1]}")
@@ -147,7 +162,7 @@ __tab_update() {
     buf="${buf//\"/\\\"}"
     local cwd="${PWD//\\/\\\\}"
     cwd="${cwd//\"/\\\"}"
-    __tab_send_recv "{\"buffer\":\"$buf\",\"cwd\":\"$cwd\"}"
+    __tab_send_recv "{\"buffer\":\"$buf\",\"cwd\":\"$cwd\"}" "$BUFFER"
     if __tab_parse; then
         __tab_render
     else
