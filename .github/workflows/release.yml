@@ -8,20 +8,44 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-refs/tags/${{ github.ref_name }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
             arch: arm64
+            platform: darwin
+            ext: ""
           - target: x86_64-apple-darwin
             os: macos-latest
             arch: amd64
+            platform: darwin
+            ext: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            arch: amd64
+            platform: linux
+            ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            arch: arm64
+            platform: linux
+            ext: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            arch: amd64
+            platform: windows
+            ext: ".exe"
 
     runs-on: ${{ matrix.os }}
 
@@ -30,57 +54,69 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install cross compile deps (linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (tar.gz for unix)
+        if: matrix.platform != 'windows'
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../tab_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.tar.gz tab tab-daemon
-          cd ../../..
+          tar czf ../../../tab_${GITHUB_REF_NAME}_${{ matrix.platform }}_${{ matrix.arch }}.tar.gz tab tab-daemon
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Package (zip for windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target\${{ matrix.target }}\release\tab.exe,target\${{ matrix.target }}\release\tab-daemon.exe -DestinationPath tab_${Env:GITHUB_REF_NAME}_windows_${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: tab-darwin-${{ matrix.arch }}
-          path: tab_*.tar.gz
+          name: tab-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            tab_*.tar.gz
+            tab_*.zip
 
   release:
     needs: build
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-
       - name: Generate checksums
-        run: sha256sum tab_*.tar.gz > checksums.txt
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+        run: sha256sum tab_*.tar.gz tab_*.zip 2>/dev/null > checksums.txt
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
             tab_*.tar.gz
+            tab_*.zip
             checksums.txt
           generate_release_notes: true
 
   update-homebrew:
     needs: release
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -90,10 +126,12 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           SHA_ARM64=$(sha256sum tab_${GITHUB_REF_NAME}_darwin_arm64.tar.gz | awk '{print $1}')
           SHA_AMD64=$(sha256sum tab_${GITHUB_REF_NAME}_darwin_amd64.tar.gz | awk '{print $1}')
+          SHA_LINUX_AMD64=$(sha256sum tab_${GITHUB_REF_NAME}_linux_amd64.tar.gz | awk '{print $1}')
+          SHA_LINUX_ARM64=$(sha256sum tab_${GITHUB_REF_NAME}_linux_arm64.tar.gz | awk '{print $1}')
 
           cat > tab.rb << FORMULA
           class Tab < Formula
-            desc "Terminal autocomplete plugin with fuzzy history matching"
+            desc "Cross-platform terminal autocomplete plugin with fuzzy history matching"
             homepage "https://github.com/okisdev/tab"
             version "${VERSION}"
             license "MIT"
@@ -102,10 +140,19 @@ jobs:
               if Hardware::CPU.arm?
                 url "https://github.com/okisdev/tab/releases/download/${GITHUB_REF_NAME}/tab_${GITHUB_REF_NAME}_darwin_arm64.tar.gz"
                 sha256 "${SHA_ARM64}"
-              end
-              if Hardware::CPU.intel?
+              else
                 url "https://github.com/okisdev/tab/releases/download/${GITHUB_REF_NAME}/tab_${GITHUB_REF_NAME}_darwin_amd64.tar.gz"
                 sha256 "${SHA_AMD64}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/okisdev/tab/releases/download/${GITHUB_REF_NAME}/tab_${GITHUB_REF_NAME}_linux_arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "https://github.com/okisdev/tab/releases/download/${GITHUB_REF_NAME}/tab_${GITHUB_REF_NAME}_linux_amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
               end
             end
 
@@ -116,10 +163,12 @@ jobs:
 
             def caveats
               <<~EOS
-                To activate tab, add to your ~/.zshrc:
-                  eval "\\\$(tab init zsh)"
+                activate tab in your shell:
+                  zsh:  eval "\\\$(tab init zsh)"   # ~/.zshrc
+                  bash: eval "\\\$(tab init bash)"  # ~/.bashrc
+                  fish: tab init fish > ~/.config/fish/conf.d/tab.fish
 
-                Then install the background service:
+                then install the background service:
                   tab install
               EOS
             end
@@ -136,8 +185,6 @@ jobs:
             end
           end
           FORMULA
-
-          # Fix indentation
           sed -i 's/^          //' tab.rb
 
       - name: Push to Homebrew tap
@@ -150,5 +197,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/tab.rb
-          git commit -m "Update tab to ${GITHUB_REF_NAME}"
+          git commit -m "update tab to ${GITHUB_REF_NAME}" || echo "no change"
           git push
