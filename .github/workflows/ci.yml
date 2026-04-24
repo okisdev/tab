@@ -8,12 +8,15 @@ on:
 
 jobs:
   check:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       - name: Check
         run: cargo check --all
@@ -25,4 +28,5 @@ jobs:
         run: cargo test --all
 
       - name: Format
+        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check

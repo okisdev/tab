@@ -1,9 +1,19 @@
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::io::{self, Write};
 
 use anyhow::Result;
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    queue,
+    style::{
+        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    },
+    terminal::{Clear, ClearType},
+};
+
 use tab_core::Config;
+
+use crate::term::{reserve_lines, TerminalGuard};
 
 struct Setting {
     label: &'static str,
@@ -27,7 +37,7 @@ pub fn run() -> Result<()> {
         Setting {
             label: "Max results",
             options: (4..=16).map(|n| n.to_string()).collect(),
-            selected: (config.completion.max_results.clamp(4, 16) - 4),
+            selected: config.completion.max_results.clamp(4, 16) - 4,
         },
         Setting {
             label: "Log level",
@@ -50,92 +60,69 @@ pub fn run() -> Result<()> {
         },
     ];
 
-    let mut cursor = 0usize;
+    let mut out = io::stderr();
+    let _guard = TerminalGuard::enter_hidden(&mut out)?;
 
-    let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-    let tty_fd = tty.as_raw_fd();
+    let total_lines: u16 = (settings.len() + 3) as u16;
+    reserve_lines(&mut out, total_lines)?;
+    queue!(out, cursor::SavePosition)?;
+    out.flush()?;
 
-    let orig = termios_get(tty_fd)?;
-    let mut raw = orig;
-    termios_make_raw(&mut raw);
-    termios_set(tty_fd, &raw)?;
+    let mut cursor_i = 0usize;
+    render(&mut out, &settings, cursor_i)?;
 
-    // Hide cursor
-    let _ = tty.write_all(b"\x1b[?25l");
-
-    render(&mut tty, &settings, cursor);
-
-    let mut buf = [0u8; 32];
-    let saved;
-    loop {
-        let n = tty.read(&mut buf)?;
-        if n == 0 {
-            saved = false;
-            break;
+    let saved = loop {
+        match event::read() {
+            Ok(Event::Key(key)) => {
+                if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                    continue;
+                }
+                match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break false,
+                    (KeyCode::Enter, _) => break true,
+                    (KeyCode::Up, _) => {
+                        cursor_i = cursor_i.saturating_sub(1);
+                        render(&mut out, &settings, cursor_i)?;
+                    }
+                    (KeyCode::Down, _) => {
+                        if cursor_i + 1 < settings.len() {
+                            cursor_i += 1;
+                        }
+                        render(&mut out, &settings, cursor_i)?;
+                    }
+                    (KeyCode::Left, _) => {
+                        let s = &mut settings[cursor_i];
+                        if s.selected > 0 {
+                            s.selected -= 1;
+                        }
+                        render(&mut out, &settings, cursor_i)?;
+                    }
+                    (KeyCode::Right, _) => {
+                        let s = &mut settings[cursor_i];
+                        if s.selected + 1 < s.options.len() {
+                            s.selected += 1;
+                        }
+                        render(&mut out, &settings, cursor_i)?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break false,
         }
+    };
 
-        match &buf[..n] {
-            // Esc or Ctrl-C
-            [27] | [3] => {
-                saved = false;
-                break;
-            }
-
-            // Enter
-            [13] => {
-                saved = true;
-                break;
-            }
-
-            // Up
-            [27, 91, 65] | [27, 79, 65] => {
-                cursor = cursor.saturating_sub(1);
-                render(&mut tty, &settings, cursor);
-            }
-
-            // Down
-            [27, 91, 66] | [27, 79, 66] => {
-                if cursor < settings.len() - 1 {
-                    cursor += 1;
-                }
-                render(&mut tty, &settings, cursor);
-            }
-
-            // Left
-            [27, 91, 68] | [27, 79, 68] => {
-                let s = &mut settings[cursor];
-                if s.selected > 0 {
-                    s.selected -= 1;
-                }
-                render(&mut tty, &settings, cursor);
-            }
-
-            // Right
-            [27, 91, 67] | [27, 79, 67] => {
-                let s = &mut settings[cursor];
-                if s.selected < s.options.len() - 1 {
-                    s.selected += 1;
-                }
-                render(&mut tty, &settings, cursor);
-            }
-
-            _ => {}
-        }
+    queue!(out, cursor::RestorePosition)?;
+    for _ in 0..total_lines {
+        queue!(
+            out,
+            cursor::MoveToNextLine(1),
+            Clear(ClearType::CurrentLine)
+        )?;
     }
-
-    // Restore terminal
-    let _ = tty.write_all(b"\x1b[?25h"); // show cursor
-    let _ = termios_set(tty_fd, &orig);
-    // Clear rendered area
-    let lines = settings.len() + 3; // header + settings + footer + blank
-    let mut out = String::new();
-    out.push_str("\x1b[s");
-    for _ in 0..lines {
-        out.push_str("\r\n\x1b[2K");
-    }
-    out.push_str("\x1b[u");
-    let _ = tty.write_all(out.as_bytes());
-    let _ = tty.flush();
+    queue!(out, cursor::RestorePosition)?;
+    out.flush()?;
+    // _guard drops → cursor::Show + disable_raw_mode
 
     if saved {
         let mut new_config = config;
@@ -153,93 +140,80 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn render(tty: &mut std::fs::File, settings: &[Setting], cursor: usize) {
-    let mut out = String::new();
+fn render<W: Write>(out: &mut W, settings: &[Setting], cursor_i: usize) -> Result<()> {
+    queue!(out, cursor::RestorePosition)?;
 
-    let total_lines = settings.len() + 3;
-    // Create space
-    out.push_str("\x1b[s");
-    for _ in 0..total_lines {
-        out.push_str("\r\n");
-    }
-    out.push_str(&format!("\x1b[{}A", total_lines));
+    queue!(
+        out,
+        Clear(ClearType::CurrentLine),
+        SetAttribute(Attribute::Bold),
+        Print("  tab settings"),
+        ResetColor
+    )?;
 
-    // Header
-    out.push_str("\r\n\x1b[2K");
-    out.push_str("\x1b[1m  tab settings\x1b[0m");
-    out.push_str("\r\n\x1b[2K");
-    out.push_str("\x1b[90m  ─────────────────────────────────\x1b[0m");
+    queue!(
+        out,
+        cursor::MoveToNextLine(1),
+        Clear(ClearType::CurrentLine),
+        SetForegroundColor(Color::DarkGrey),
+        Print("  ─────────────────────────────────"),
+        ResetColor
+    )?;
 
-    // Settings
     for (i, s) in settings.iter().enumerate() {
-        out.push_str("\r\n\x1b[2K");
-        let marker = if i == cursor {
-            "\x1b[36m▸\x1b[0m"
-        } else {
-            " "
-        };
-        out.push_str(&format!("  {marker} \x1b[1m{:<14}\x1b[0m", s.label));
-
+        queue!(
+            out,
+            cursor::MoveToNextLine(1),
+            Clear(ClearType::CurrentLine)
+        )?;
+        let marker = if i == cursor_i { "▸" } else { " " };
+        queue!(
+            out,
+            Print("  "),
+            SetForegroundColor(Color::Cyan),
+            Print(marker),
+            ResetColor,
+            Print(" "),
+            SetAttribute(Attribute::Bold),
+            Print(format!("{:<14}", s.label)),
+            ResetColor
+        )?;
         for (j, opt) in s.options.iter().enumerate() {
-            if j == s.selected {
-                out.push_str(&format!(" \x1b[7m {opt} \x1b[0m"));
+            let label = if opt.is_empty() {
+                "(default)"
             } else {
-                out.push_str(&format!(" \x1b[90m {opt} \x1b[0m"));
+                opt.as_str()
+            };
+            if j == s.selected {
+                queue!(
+                    out,
+                    Print(" "),
+                    SetBackgroundColor(Color::White),
+                    SetForegroundColor(Color::Black),
+                    Print(format!(" {label} ")),
+                    ResetColor
+                )?;
+            } else {
+                queue!(
+                    out,
+                    Print(" "),
+                    SetForegroundColor(Color::DarkGrey),
+                    Print(format!(" {label} ")),
+                    ResetColor
+                )?;
             }
         }
     }
 
-    // Footer
-    out.push_str("\r\n\x1b[2K");
-    out.push_str("\x1b[90m  ↑↓ navigate  ←→ change  Enter save  Esc cancel\x1b[0m");
+    queue!(
+        out,
+        cursor::MoveToNextLine(1),
+        Clear(ClearType::CurrentLine),
+        SetForegroundColor(Color::DarkGrey),
+        Print("  ↑↓ navigate  ←→ change  Enter save  Esc cancel"),
+        ResetColor
+    )?;
 
-    out.push_str("\x1b[u");
-    let _ = tty.write_all(out.as_bytes());
-    let _ = tty.flush();
-}
-
-// ── Termios helpers (same as tui.rs) ──
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Termios {
-    c_iflag: libc::tcflag_t,
-    c_oflag: libc::tcflag_t,
-    c_cflag: libc::tcflag_t,
-    c_lflag: libc::tcflag_t,
-    c_cc: [libc::cc_t; 20],
-    c_ispeed: libc::speed_t,
-    c_ospeed: libc::speed_t,
-}
-
-fn termios_get(fd: i32) -> Result<Termios> {
-    unsafe {
-        let mut t: Termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut t as *mut Termios as *mut libc::termios) != 0 {
-            anyhow::bail!("tcgetattr failed");
-        }
-        Ok(t)
-    }
-}
-
-fn termios_set(fd: i32, t: &Termios) -> Result<()> {
-    unsafe {
-        if libc::tcsetattr(
-            fd,
-            libc::TCSANOW,
-            t as *const Termios as *const libc::termios,
-        ) != 0
-        {
-            anyhow::bail!("tcsetattr failed");
-        }
-        Ok(())
-    }
-}
-
-fn termios_make_raw(t: &mut Termios) {
-    unsafe {
-        libc::cfmakeraw(t as *mut Termios as *mut libc::termios);
-    }
-    t.c_cc[libc::VMIN] = 1;
-    t.c_cc[libc::VTIME] = 0;
+    out.flush()?;
+    Ok(())
 }

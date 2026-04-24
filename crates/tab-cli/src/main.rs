@@ -3,6 +3,7 @@ mod init;
 mod logs;
 mod service;
 mod settings;
+mod term;
 mod tui;
 
 use anyhow::Result;
@@ -10,7 +11,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "tab", about = "Terminal autocomplete plugin")]
+#[command(name = "tab", about = "Cross-platform terminal autocomplete plugin")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -18,70 +20,72 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Output shell integration script
+    /// Emit shell integration script for eval/source
     Init {
-        /// Shell type: zsh, bash, fish
+        /// zsh, bash, fish, or pwsh
         shell: String,
     },
 
-    /// Run as coprocess for real-time completions
+    /// Long-lived coprocess bridging a shell to the daemon
     Hook,
 
-    /// Interactive completion TUI (called by shell widget on Tab)
+    /// Interactive picker — print the selected text to stdout
     Complete {
-        /// Current shell buffer content
         #[arg(long)]
         buffer: String,
-
-        /// Current working directory
         #[arg(long)]
         cwd: String,
     },
 
-    /// Start the daemon manually (foreground)
+    /// Run the daemon in the foreground (for manual testing)
     Start,
 
-    /// Check daemon status
+    /// Report daemon and service status
     Status,
 
-    /// Install tab (launchd service + shell integration hint)
+    /// Install the daemon as a login-time service
     Install,
 
-    /// Uninstall tab (stop daemon + remove launchd service)
+    /// Stop and remove the service
     Uninstall,
 
-    /// Interactive settings configuration
+    /// Interactive settings
     Settings,
 
-    /// View log files
+    /// Show or tail tab log files
     Logs {
-        /// Component: daemon, hook, shell, or all
         #[arg(default_value = "all")]
         component: String,
-
-        /// Follow/tail the log
         #[arg(short, long)]
         follow: bool,
-
-        /// Number of lines to show
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: u32,
     },
+
+    /// Diagnose the environment (shells, daemon, history paths)
+    Doctor,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Complete subcommand must not log to stderr (corrupts TUI)
     match &cli.command {
-        Commands::Complete { .. } => {}
+        Commands::Complete { .. } => {
+            // TUI needs a clean stderr — don't attach a logger.
+        }
+        Commands::Hook => {
+            // File logging only — stdout/stderr belong to the shell protocol.
+            // `info` default: reconnect attempts + session lifecycle land in
+            // the log so "completions stopped working" has something to read.
+            tab_core::logging::init("hook", "info");
+        }
         _ => {
-            tracing_subscriber::fmt()
+            let _ = tracing_subscriber::fmt()
                 .with_env_filter(
                     EnvFilter::try_from_env("TAB_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
                 )
                 .with_writer(std::io::stderr)
-                .init();
+                .try_init();
         }
     }
 
@@ -93,9 +97,7 @@ fn main() -> Result<()> {
                 print!("{text}");
                 std::process::exit(0);
             }
-            None => {
-                std::process::exit(1);
-            }
+            None => std::process::exit(1),
         },
         Commands::Start => service::start_foreground()?,
         Commands::Status => service::status()?,
@@ -107,6 +109,7 @@ fn main() -> Result<()> {
             follow,
             lines,
         } => logs::show(&component, follow, lines)?,
+        Commands::Doctor => service::doctor()?,
     }
 
     Ok(())

@@ -2,13 +2,21 @@
 name = "tab-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-dirs = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+interprocess = { workspace = true }
+whoami.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
-toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

@@ -7,6 +7,13 @@ on:
 permissions:
   contents: write
 
+# Prevents the auto-release tag push from racing the release workflow on the
+# same tag: both end up uploading to the same Release and one clobbers the
+# other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
