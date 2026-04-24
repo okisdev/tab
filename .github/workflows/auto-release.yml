@@ -3,6 +3,14 @@ name: Auto Release
 on:
   push:
     branches: [master]
+    # Skip release when the push only touches meta / ops files — nothing in the
+    # shipped binary changes, so bumping the version would just create noise.
+    paths-ignore:
+      - '.github/**'
+      - 'README.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'docs/**'
 
 permissions:
   contents: write
@@ -61,7 +69,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
+          # --allow-empty: if the source tree already has the target version
+          # (e.g. the PR pre-bumped it), the sed is a no-op and there's nothing
+          # to stage. Without this flag `git commit` exits 1, the workflow
+          # fails, and no tag gets pushed.
+          git commit --allow-empty -m "chore: bump version to ${{ steps.bump.outputs.version }}"
           git tag "${{ steps.bump.outputs.tag }}"
           git push origin master --tags
 
