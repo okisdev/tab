@@ -1,1 +1,60 @@
+# ── Rust build ───────────────────────────────────────────────
 /target
+**/*.rs.bk
+
+# ── Cargo local overrides (prefer committing only the shared config) ─
+.cargo/config.local.toml
+.cargo/config.toml.local
+
+# ── Coverage / profiling ─────────────────────────────────────
+*.profraw
+*.profdata
+perf.data
+perf.data.old
+flamegraph.svg
+
+# ── Debug symbols ────────────────────────────────────────────
+*.pdb
+*.dSYM/
+
+# ── OS metadata ──────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ── Editors / IDEs ───────────────────────────────────────────
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.iml
+.fleet/
+.helix/
+.nvim.lua
+.zed/
+*.swp
+*.swo
+*~
+
+# ── Tool caches / AI assistants ──────────────────────────────
+.claude/
+.aider*
+.cursor/
+CLAUDE.local.md
+
+# ── Env files (never commit secrets) ─────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Misc ─────────────────────────────────────────────────────
+*.log
+tab-bench/
+
+# ── Stray runtime sockets (in case a daemon was launched from the repo
+#    before the XDG/TMPDIR path hardening — see tab-core::paths) ─────
+/tab-*/

@@ -1,29 +1,12 @@
-use anyhow::Result;
-
-pub fn print_init_script(shell: &str) -> Result<()> {
-    match shell {
-        "zsh" => print!("{}", ZSH_INIT),
-        "bash" => {
-            eprintln!("tab: bash integration coming soon");
-        }
-        "fish" => {
-            eprintln!("tab: fish integration coming soon");
-        }
-        _ => anyhow::bail!("unsupported shell: {shell}"),
-    }
-    Ok(())
-}
-
-const ZSH_INIT: &str = r#"
-# tab - terminal autocomplete plugin
-# Add to .zshrc: eval "$(tab init zsh)"
+pub const SCRIPT: &str = r#"
+# tab - terminal autocomplete plugin (zsh)
+# Install: eval "$(tab init zsh)"
 
 __tab_bin="${commands[tab]:-tab}"
 __tab_selected=0
 __tab_active=0
 __tab_candidates=()
 __tab_sources=()
-__tab_highlight=""
 
 # ── Coprocess ──
 
@@ -36,18 +19,15 @@ __tab_start_coproc() {
 }
 
 __tab_send_recv() {
-    # $1 = request JSON, $2 = expected buffer (echoed by daemon for correlation)
     __tab_start_coproc
     __tab_response=""
-    # Drain stale responses from the pipe (user typed faster than daemon responded)
+    local __tab_discard
     while read -t 0 -p __tab_discard 2>/dev/null; do :; done
     if ! print -p -- "$1" 2>/dev/null; then
         __tab_coproc_pid=""
         __tab_start_coproc
         print -p -- "$1" 2>/dev/null || return
     fi
-    # Read until the echoed buffer matches, or timeout. A mismatch means we
-    # caught a stale response from a previous request whose read had timed out.
     local _resp _sep=$'\x1f' _echo _attempt=0
     while (( _attempt < 3 )); do
         (( _attempt++ ))
@@ -62,7 +42,7 @@ __tab_send_recv() {
     done
 }
 
-# ── Parse response into candidates array ──
+# ── Parse response ──
 
 __tab_parse() {
     __tab_candidates=()
@@ -72,7 +52,6 @@ __tab_parse() {
     local _sep=$'\x1f'
     local -a entries=("${(@ps.$_sep.)__tab_response}")
 
-    # entries[1] is the buffer echo, already validated in __tab_send_recv.
     local i entry
     for (( i = 2; i <= ${#entries[@]}; i++ )); do
         entry="${entries[$i]}"
@@ -83,19 +62,18 @@ __tab_parse() {
     (( ${#__tab_candidates[@]} > 0 ))
 }
 
-# ── Highlight helper ──
+# ── Render via POSTDISPLAY + region_highlight ──
 
 __tab_clear_highlight() {
     local -a _rh=()
     local _e
     for _e in "${(@)region_highlight}"; do
-        [[ "$_e" == *"memo=tab"* ]] || _rh+=("$_e")
+        # Match memo=tab as a whole token — don't clobber other plugins'
+        # `memo=tabular` / `memo=tab-xyz` etc.
+        [[ "$_e" == *"memo=tab" || "$_e" == *"memo=tab "* ]] || _rh+=("$_e")
     done
     region_highlight=("${_rh[@]}")
-    __tab_highlight=""
 }
-
-# ── Render via POSTDISPLAY + region_highlight (zle -M cannot do color) ──
 
 __tab_render() {
     local n=${#__tab_candidates[@]}
@@ -113,11 +91,9 @@ __tab_render() {
     local ghost=""
     [[ "$selected" == "$BUFFER"* ]] && ghost="${selected#$BUFFER}"
 
-    # Build POSTDISPLAY = ghost text + candidate list
     local post="$ghost"
     local buf_len=${#BUFFER}
 
-    # Dim the ghost text
     if [[ -n "$ghost" ]]; then
         region_highlight+=("$buf_len $(( buf_len + ${#ghost} )) fg=8 memo=tab")
     fi
@@ -126,11 +102,11 @@ __tab_render() {
     for (( i = 1; i <= n; i++ )); do
         _cand="${__tab_candidates[$i]}"
         case "${__tab_sources[$i]}" in
-            H) icon="🕘" ;; S|B) icon="⚡" ;; *) icon="📁" ;;
+            H) icon="H" ;; S|B) icon="S" ;; *) icon="P" ;;
         esac
 
         if (( i - 1 == __tab_selected )); then
-            prefix_str=$'\n'" ▸ $icon "
+            prefix_str=$'\n'" > $icon "
         else
             prefix_str=$'\n'"   $icon "
         fi
@@ -139,7 +115,6 @@ __tab_render() {
         local line_start=$(( buf_len + ${#post} ))
         post+="$line"
 
-        # Gray the predicted (non-typed) suffix of matching candidates
         if [[ -n "$BUFFER" && "$_cand" == "$BUFFER"* ]]; then
             local gray_start=$(( line_start + ${#prefix_str} + ${#BUFFER} ))
             local gray_end=$(( line_start + ${#line} ))
@@ -152,17 +127,24 @@ __tab_render() {
     POSTDISPLAY="$post"
 }
 
-# ── Core actions ──
-
 __tab_update() {
     [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); __tab_clear_highlight; POSTDISPLAY=""; zle -M ""; return; }
     __tab_active=1
     __tab_selected=0
-    local buf="${BUFFER//\\/\\\\}"
-    buf="${buf//\"/\\\"}"
+    # `buf` = sanitized raw text; control bytes replaced with space so that
+    # bracketed-paste with embedded tabs/newlines still forms valid JSON and
+    # the daemon's buffer-echo correlation still matches.
+    local buf="${BUFFER//$'\t'/ }"
+    buf="${buf//$'\n'/ }"
+    buf="${buf//$'\r'/ }"
+    buf="${buf//$'\x1f'/ }"
+    # `json_buf` = JSON-escaped copy of `buf`. The daemon re-emits the parsed
+    # (unescaped) value, so we compare the echoed field to `buf`, NOT $BUFFER.
+    local json_buf="${buf//\\/\\\\}"
+    json_buf="${json_buf//\"/\\\"}"
     local cwd="${PWD//\\/\\\\}"
     cwd="${cwd//\"/\\\"}"
-    __tab_send_recv "{\"buffer\":\"$buf\",\"cwd\":\"$cwd\"}" "$BUFFER"
+    __tab_send_recv "{\"buffer\":\"$json_buf\",\"cwd\":\"$cwd\"}" "$buf"
     if __tab_parse; then
         __tab_render
     else
@@ -188,8 +170,6 @@ __tab_accept() {
     zle -M ""
 }
 
-# ── Widget wrappers ──
-
 __tab_wrap_widget() {
     local widget="$1"
     eval "
@@ -211,12 +191,10 @@ __tab_wrap_widget kill-word
 __tab_wrap_widget bracketed-paste
 __tab_wrap_widget yank
 
-# Tab: accept selected candidate
 __tab_accept_widget() { __tab_accept; }
 zle -N __tab_accept_widget
 bindkey '^I' __tab_accept_widget
 
-# Right arrow: accept selected candidate if active, otherwise normal movement
 __tab_forward_char() {
     if [[ $CURSOR -eq ${#BUFFER} ]] && (( __tab_active )); then
         __tab_accept
@@ -228,7 +206,6 @@ zle -N __tab_forward_char
 bindkey '\e[C' __tab_forward_char
 bindkey '\eOC' __tab_forward_char
 
-# Up/Down: navigate candidates (fall through to history if inactive)
 __tab_nav_up() {
     if (( __tab_active )); then
         (( __tab_selected > 0 )) && (( __tab_selected-- ))
@@ -252,8 +229,6 @@ bindkey '\e[B' __tab_nav_down
 bindkey '\eOA' __tab_nav_up
 bindkey '\eOB' __tab_nav_down
 
-# Enter: accept prediction if active, otherwise execute command
-# If the selected prediction matches the buffer exactly, execute directly.
 __tab_enter() {
     if (( __tab_active )); then
         local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
@@ -267,7 +242,6 @@ __tab_enter() {
 zle -N __tab_enter
 bindkey '^M' __tab_enter
 
-# Escape: dismiss prediction if active
 __tab_dismiss() {
     if (( __tab_active )); then
         __tab_active=0
@@ -280,14 +254,40 @@ __tab_dismiss() {
 zle -N __tab_dismiss
 bindkey '\e' __tab_dismiss
 
-# preexec: reset
-__tab_preexec() { __tab_active=0; __tab_candidates=(); }
+__tab_reset_state() {
+    __tab_active=0
+    __tab_candidates=()
+    __tab_sources=()
+    __tab_selected=0
+    __tab_clear_highlight
+    POSTDISPLAY=""
+}
+
+__tab_preexec() { __tab_reset_state; }
+
+# Runs at the start of every new line, after Ctrl-C aborts or `accept-line`.
+# Without this, interrupting mid-edit leaves __tab_active=1 and the next Tab
+# inserts a stale candidate from the prior line.
+__tab_line_init_widget() {
+    __tab_reset_state
+    zle -M ""
+}
+zle -N zle-line-init __tab_line_init_widget
+
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec __tab_preexec
 
-# Cleanup
 __tab_cleanup() {
     [[ -n "${__tab_coproc_pid:-}" ]] && kill "$__tab_coproc_pid" 2>/dev/null
 }
 trap __tab_cleanup EXIT
+
+# ── zsh-autosuggestions coexistence ──
+#
+# zsh-autosuggestions also wraps `self-insert` and also writes POSTDISPLAY,
+# so whichever plugin sources last wins and the other is silently broken.
+# tab already provides ghost-text, so disable autosuggestions when present.
+if typeset -f _zsh_autosuggest_disable &>/dev/null; then
+    _zsh_autosuggest_disable 2>/dev/null || true
+fi
 "#;

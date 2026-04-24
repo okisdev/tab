@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// ── Query Protocol (stateless) ─────────────────────────────
-
-/// CLI → Daemon: query for completions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
     pub buffer: String,
@@ -11,19 +8,15 @@ pub struct QueryRequest {
     pub match_mode: String,
 }
 
-/// Daemon → CLI: completion candidates
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
     pub candidates: Vec<Candidate>,
 }
 
-// ── Shared types ────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub text: String,
     pub score: f64,
-    /// Character indices in `text` that matched the query (for highlighting)
     pub match_positions: Vec<u32>,
     pub source: CandidateSource,
 }
@@ -34,7 +27,6 @@ pub enum CandidateSource {
     History,
     Path,
     Script,
-    /// Script that also appears in history
     ScriptHistory,
 }
 
