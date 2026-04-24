@@ -1,90 +1,185 @@
 use anyhow::Result;
-use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
-use tab_core::{socket_dir, Candidate, CandidateSource, QueryRequest, QueryResponse};
-use tab_history::{HistoryIndex, HistoryWatcher};
+use interprocess::local_socket::tokio::prelude::*;
+use tab_core::{ipc, Config, QueryRequest};
+use tab_history::HistoryWatcher;
 
-const MAX_CANDIDATES: usize = 8;
+/// Maximum bytes read from a single client request line. Above this we drop
+/// the connection — either a runaway client or an attacker.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
-struct DaemonState {
-    history: HistoryIndex,
-    config: tab_core::Config,
+/// Soft cap on the user's `buffer` query string. Anything longer is truncated
+/// to protect the scorer from O(N*M) blowup.
+const MAX_BUFFER_CHARS: usize = 2048;
+
+/// Max concurrent client connections. A misbehaving shell can't block everyone.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+
+/// Idle-read timeout — drop slowloris clients.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub struct DaemonState {
+    pub history: Arc<tab_history::HistoryIndex>,
+    pub config: Arc<Config>,
 }
 
 pub async fn run() -> Result<()> {
-    let sock_dir = socket_dir();
-    std::fs::create_dir_all(&sock_dir)?;
+    let config = Config::load();
+    let (watcher, history) = HistoryWatcher::new(&config)?;
 
-    let shell_sock = sock_dir.join("shell.sock");
-    let _ = std::fs::remove_file(&shell_sock);
+    let state = Arc::new(RwLock::new(DaemonState {
+        history: Arc::new(history),
+        config: Arc::new(config),
+    }));
 
-    let history_path = dirs::home_dir()
-        .map(|h: std::path::PathBuf| h.join(".zsh_history"))
-        .unwrap_or_default();
-
-    let (watcher, history) = HistoryWatcher::new(&history_path)?;
-
-    let config = tab_core::Config::load();
-    let state = Arc::new(RwLock::new(DaemonState { history, config }));
-
-    // Periodic history + config reload
+    // Reload loop: refresh config + index on disk changes + rotate log.
     let reload_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        let mut tick_count: u64 = 0;
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
-            let new_index = watcher.check_reload();
-            let new_config = tab_core::Config::load();
-            let mut state = reload_state.write().await;
+            tick_count = tick_count.wrapping_add(1);
+
+            let new_config = Config::load();
+            let new_index = watcher.check_reload(&new_config);
+            let mut guard = reload_state.write().await;
             if let Some(idx) = new_index {
-                state.history = idx;
+                guard.history = Arc::new(idx);
             }
-            state.config = new_config;
+            guard.config = Arc::new(new_config);
+            drop(guard);
+
+            // Check log rotation every ~60s (30 ticks × 2s) — cheap stat call.
+            if tick_count.is_multiple_of(30) {
+                tab_core::logging::rotate_component("daemon");
+            }
         }
     });
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let listener = ipc::prepare_listener()?;
+    tracing::info!("listening on local socket");
 
-    let listener = UnixListener::bind(&shell_sock)?;
-    tracing::info!("listening on {:?}", shell_sock);
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+
+    let mut accept_fail_streak = 0u32;
+    let mut accept_backoff = Duration::from_millis(50);
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, state).await {
-                tracing::error!("connection error: {e}");
+        tokio::select! {
+            _ = &mut shutdown => {
+                tracing::info!("shutdown signal received; exiting");
+                return Ok(());
             }
-        });
+            result = listener.accept() => {
+                let stream = match result {
+                    Ok(s) => {
+                        accept_fail_streak = 0;
+                        accept_backoff = Duration::from_millis(50);
+                        s
+                    }
+                    Err(e) => {
+                        accept_fail_streak += 1;
+                        tracing::error!("accept error #{accept_fail_streak}: {e}");
+                        if accept_fail_streak > 50 {
+                            anyhow::bail!("too many accept errors, exiting");
+                        }
+                        tokio::time::sleep(accept_backoff).await;
+                        accept_backoff = (accept_backoff * 2).min(Duration::from_secs(5));
+                        continue;
+                    }
+                };
+
+                let permit = match sem.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::warn!("connection cap {MAX_CONCURRENT_CONNECTIONS} hit; dropping new client");
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(e) = handle_connection(stream, state).await {
+                        tracing::debug!("connection ended: {e}");
+                    }
+                });
+            }
+        }
     }
 }
 
-async fn handle_connection(
-    stream: tokio::net::UnixStream,
-    state: Arc<RwLock<DaemonState>>,
-) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+/// Await Ctrl-C on any platform + SIGTERM on Unix.
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
+}
 
-    tracing::info!("new connection");
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+async fn handle_connection<S>(stream: S, state: Arc<RwLock<DaemonState>>) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::<u8>::new();
+
+    tracing::debug!("new connection");
 
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await?;
+        let read_result =
+            tokio::time::timeout(READ_TIMEOUT, reader.read_until(b'\n', &mut line)).await;
+
+        let n = match read_result {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::debug!("read timeout, dropping connection");
+                return Ok(());
+            }
+        };
+
         if n == 0 {
             break;
         }
+        if line.len() > MAX_REQUEST_BYTES {
+            tracing::warn!("request exceeded {MAX_REQUEST_BYTES} bytes, dropping connection");
+            return Ok(());
+        }
 
-        let req: QueryRequest = match serde_json::from_str(line.trim()) {
+        let text = match std::str::from_utf8(&line) {
+            Ok(s) => s.trim(),
+            Err(_) => {
+                tracing::warn!("non-UTF8 request, dropping line");
+                continue;
+            }
+        };
+
+        let mut req: QueryRequest = match serde_json::from_str(text) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("invalid request: {e}");
@@ -92,7 +187,21 @@ async fn handle_connection(
             }
         };
 
-        let resp = handle_query(req, &state).await;
+        // Clamp buffer length: nothing the scorer can meaningfully use is
+        // longer than a few hundred chars, and a huge buffer is a blowup vector.
+        if req.buffer.chars().count() > MAX_BUFFER_CHARS {
+            let truncated: String = req.buffer.chars().take(MAX_BUFFER_CHARS).collect();
+            req.buffer = truncated;
+        }
+
+        // Snapshot under read lock, release before CPU-heavy query so
+        // concurrent clients aren't serialised.
+        let (history, config) = {
+            let guard = state.read().await;
+            (Arc::clone(&guard.history), Arc::clone(&guard.config))
+        };
+
+        let resp = crate::query::handle(req, &history, &config);
         let json = serde_json::to_string(&resp)?;
         writer.write_all(json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
@@ -100,76 +209,4 @@ async fn handle_connection(
     }
 
     Ok(())
-}
-
-async fn handle_query(req: QueryRequest, state: &Arc<RwLock<DaemonState>>) -> QueryResponse {
-    // Perform all filesystem I/O before acquiring the lock
-    let scripts = crate::scripts::read_scripts(&req.cwd);
-    let script_candidates =
-        crate::scripts::query_scripts_with(&req.buffer, &scripts, MAX_CANDIDATES);
-
-    // For path commands (cd, ls, etc.), only show filesystem candidates — no history noise
-    // No lock needed for this path.
-    if crate::paths::is_path_command(&req.buffer) {
-        let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
-        let candidates = merge_candidates(script_candidates, path_candidates, MAX_CANDIDATES);
-        return QueryResponse { candidates };
-    }
-
-    // Only hold the lock for in-memory history query
-    let mut state = state.write().await;
-
-    let match_mode = if req.match_mode.is_empty() {
-        state.config.completion.match_mode.clone()
-    } else {
-        req.match_mode.clone()
-    };
-
-    let history_candidates =
-        state
-            .history
-            .query(&req.buffer, &req.cwd, MAX_CANDIDATES, &match_mode);
-    drop(state); // release lock before remaining CPU work
-
-    let history_candidates =
-        crate::scripts::filter_irrelevant_pm_commands_with(history_candidates, &scripts);
-
-    let candidates = merge_candidates(script_candidates, history_candidates, MAX_CANDIDATES);
-
-    QueryResponse { candidates }
-}
-
-/// Merge script candidates (priority) with history candidates, deduplicating by text.
-fn merge_candidates(
-    scripts: Vec<Candidate>,
-    history: Vec<Candidate>,
-    max: usize,
-) -> Vec<Candidate> {
-    let history_texts: HashSet<&str> = history.iter().map(|c| c.text.as_str()).collect();
-
-    let mut seen = HashSet::new();
-    let mut result = Vec::with_capacity(max);
-
-    for mut c in scripts {
-        if seen.insert(c.text.clone()) {
-            if history_texts.contains(c.text.as_str()) {
-                c.source = CandidateSource::ScriptHistory;
-            }
-            result.push(c);
-        }
-        if result.len() >= max {
-            return result;
-        }
-    }
-
-    for c in history {
-        if seen.insert(c.text.clone()) {
-            result.push(c);
-        }
-        if result.len() >= max {
-            break;
-        }
-    }
-
-    result
 }
