@@ -116,8 +116,14 @@ mod tests {
         // widgets fire-and-forget, the handler renders when responses arrive.
         let s = script_for("zsh").unwrap();
         assert!(s.contains("zle -F"), "must register a zle -F fd handler");
-        assert!(s.contains("__tab_response_handler"), "handler function must exist");
-        assert!(s.contains("__tab_send_async"), "must use the fire-and-forget send");
+        assert!(
+            s.contains("__tab_response_handler"),
+            "handler function must exist"
+        );
+        assert!(
+            s.contains("__tab_send_async"),
+            "must use the fire-and-forget send"
+        );
         assert!(
             !s.contains("__tab_send_recv"),
             "the synchronous send-recv must be removed; it's the source of IME lag"
@@ -140,7 +146,10 @@ mod tests {
         );
         // Coproc fds get dup'd to numeric fds so zle -F can register.
         assert!(s.contains("<&p"), "must dup coproc read fd to a numeric fd");
-        assert!(s.contains(">&p"), "must dup coproc write fd to a numeric fd");
+        assert!(
+            s.contains(">&p"),
+            "must dup coproc write fd to a numeric fd"
+        );
     }
 
     #[test]
