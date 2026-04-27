@@ -5,6 +5,11 @@
 //! `compose_ctx.rs`). This file wires them into a single entry point so
 //! `query.rs` doesn't grow a case per tool.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use tab_core::Candidate;
 
 use crate::{cargo_ctx, compose_ctx, go_ctx, make_ctx, python_ctx, scripts};
@@ -16,6 +21,20 @@ pub struct CwdContext {
     pub python: python_ctx::Project,
     pub make: make_ctx::Project,
     pub compose: compose_ctx::Project,
+}
+
+/// Per-cwd cache TTL. Short enough that creating a `package.json` in the
+/// current directory and immediately querying picks it up; long enough that
+/// a burst of keystrokes (IME commit, paste, fast typing) shares one set of
+/// detector results across every request.
+const CACHE_TTL: Duration = Duration::from_secs(2);
+const CACHE_CAP: usize = 64;
+
+type Cache = Mutex<HashMap<PathBuf, (Instant, Arc<CwdContext>)>>;
+static CWD_CACHE: OnceLock<Cache> = OnceLock::new();
+
+fn cache() -> &'static Cache {
+    CWD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl CwdContext {
@@ -31,6 +50,29 @@ impl CwdContext {
             make: make_ctx::detect(cwd),
             compose: compose_ctx::detect(cwd),
         }
+    }
+
+    /// Cached variant. A burst of N requests for the same cwd within `CACHE_TTL`
+    /// (e.g. the keystrokes of an IME-committed phrase) shares one detection
+    /// pass instead of redoing six file probes per keystroke.
+    pub fn detect_cached(cwd: &str) -> Arc<Self> {
+        let key = PathBuf::from(cwd);
+        let now = Instant::now();
+        if let Ok(cache) = cache().lock() {
+            if let Some((t, ctx)) = cache.get(&key) {
+                if now.duration_since(*t) < CACHE_TTL {
+                    return Arc::clone(ctx);
+                }
+            }
+        }
+        let ctx = Arc::new(Self::detect(cwd));
+        if let Ok(mut cache) = cache().lock() {
+            if cache.len() >= CACHE_CAP {
+                cache.retain(|_, (t, _)| now.duration_since(*t) < CACHE_TTL);
+            }
+            cache.insert(key, (now, Arc::clone(&ctx)));
+        }
+        ctx
     }
 
     /// Candidates produced from the *buffer* (not from history): PM scripts
@@ -106,6 +148,39 @@ mod tests {
         assert!(texts.contains(&"cargo build"));
         assert!(texts.contains(&"cargo test"));
         assert!(!texts.contains(&"pnpm dev"));
+    }
+
+    #[test]
+    fn detect_cached_returns_same_arc_within_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let a = CwdContext::detect_cached(path);
+        let b = CwdContext::detect_cached(path);
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "second hit within TTL must return the cached Arc, not re-detect"
+        );
+    }
+
+    #[test]
+    fn detect_cached_invalidates_when_package_json_appears() {
+        // After TTL elapses, a freshly-created `package.json` is picked up.
+        // Use a longer-than-TTL sleep to avoid flakiness on slow CI.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let before = CwdContext::detect_cached(path);
+        assert!(matches!(before.pm, scripts::Project::NotNode));
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        std::thread::sleep(CACHE_TTL + std::time::Duration::from_millis(100));
+        let after = CwdContext::detect_cached(path);
+        assert!(
+            matches!(&after.pm, scripts::Project::Scripts(s) if s.iter().any(|n| n == "dev")),
+            "post-TTL re-detect must observe the new package.json"
+        );
     }
 
     #[test]
