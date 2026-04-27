@@ -67,45 +67,47 @@ __tab_send_async() {
 
 # ── Response handler (zle -F callback) ──
 #
-# Called by zle when fd_out has data. Drains every available line; applies
-# only the response whose echoed buffer matches the *current* BUFFER. Stale
-# responses (from buffers the user has already typed past) are silently
-# dropped, which is how echo correlation handles burst input.
+# `zle -F` callbacks run outside widget context: BUFFER, CURSOR, POSTDISPLAY
+# and friends are not exposed there. So the fd handler only drains the pipe
+# and trampolines into a real widget (`__tab_apply_response`) via `zle …`,
+# which gets full ZLE state. Stale responses (whose echo doesn't match the
+# live buffer) are dropped inside the widget.
 
 __tab_response_handler() {
-    emulate -L zsh
     local fd=$1
-    local _resp _sep=$'\x1f' _echo cur_buf
-    local rendered=0
-
+    local _resp
     while IFS= read -r -u "$fd" -t 0 _resp 2>/dev/null; do
         [[ -z "$_resp" ]] && continue
-        _echo="${_resp%%$_sep*}"
-        cur_buf="${BUFFER//$'\t'/ }"
-        cur_buf="${cur_buf//$'\n'/ }"
-        cur_buf="${cur_buf//$'\r'/ }"
-        cur_buf="${cur_buf//$'\x1f'/ }"
-        if [[ -z "$BUFFER" || $__tab_dismissed -eq 1 || "$_echo" != "$cur_buf" ]]; then
-            continue
-        fi
-        __tab_response="$_resp"
-        if __tab_parse; then
-            __tab_active=1
-            __tab_selected=0
-            __tab_render
-            rendered=1
-        else
-            __tab_active=0
-            __tab_candidates=()
-            __tab_clear_highlight
-            POSTDISPLAY=""
-            rendered=1
-        fi
+        zle __tab_apply_response -- "$_resp"
     done
-
-    (( rendered )) && zle -R
     return 0
 }
+
+__tab_apply_response_widget() {
+    local _resp="$1"
+    local _sep=$'\x1f'
+    local _echo="${_resp%%$_sep*}"
+    local cur_buf="${BUFFER//$'\t'/ }"
+    cur_buf="${cur_buf//$'\n'/ }"
+    cur_buf="${cur_buf//$'\r'/ }"
+    cur_buf="${cur_buf//$'\x1f'/ }"
+    if [[ -z "$BUFFER" || $__tab_dismissed -eq 1 || "$_echo" != "$cur_buf" ]]; then
+        return 0
+    fi
+    __tab_response="$_resp"
+    if __tab_parse; then
+        __tab_active=1
+        __tab_selected=0
+        __tab_render
+    else
+        __tab_active=0
+        __tab_candidates=()
+        __tab_clear_highlight
+        POSTDISPLAY=""
+    fi
+    zle -R
+}
+zle -N __tab_apply_response __tab_apply_response_widget
 
 # ── Parse response ──
 
