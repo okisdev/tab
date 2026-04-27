@@ -1,45 +1,110 @@
 pub const SCRIPT: &str = r#"
-# tab - terminal autocomplete plugin (zsh)
+# tab - terminal autocomplete plugin (zsh, async ghost-text)
 # Install: eval "$(tab init zsh)"
+#
+# The widget is fire-and-forget: it writes a JSON request to the daemon
+# coproc and returns immediately, so a single keystroke never blocks on a
+# round-trip. A `zle -F` fd handler picks up daemon responses whenever they
+# arrive and updates POSTDISPLAY in the background. This is what makes
+# burst input from a third-party IME (commits N chars at once) usable.
 
 __tab_bin="${commands[tab]:-tab}"
 __tab_selected=0
 __tab_active=0
+__tab_dismissed=0
 __tab_candidates=()
 __tab_sources=()
+__tab_coproc_pid=""
+__tab_fd_in=""
+__tab_fd_out=""
 
-# ── Coprocess ──
+# ── Coprocess management ──
 
-__tab_start_coproc() {
-    if [[ -z "${__tab_coproc_pid:-}" ]] || ! kill -0 "$__tab_coproc_pid" 2>/dev/null; then
-        setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
-        coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null
-        __tab_coproc_pid=$!
+__tab_close_coproc() {
+    if [[ -n "$__tab_fd_out" ]]; then
+        zle -F "$__tab_fd_out" 2>/dev/null
+        exec {__tab_fd_out}<&- 2>/dev/null
     fi
+    if [[ -n "$__tab_fd_in" ]]; then
+        exec {__tab_fd_in}>&- 2>/dev/null
+    fi
+    if [[ -n "$__tab_coproc_pid" ]] && kill -0 "$__tab_coproc_pid" 2>/dev/null; then
+        kill "$__tab_coproc_pid" 2>/dev/null
+    fi
+    __tab_coproc_pid=""
+    __tab_fd_in=""
+    __tab_fd_out=""
 }
 
-__tab_send_recv() {
-    __tab_start_coproc
-    __tab_response=""
-    local __tab_discard
-    while read -t 0 -p __tab_discard 2>/dev/null; do :; done
-    if ! print -p -- "$1" 2>/dev/null; then
-        __tab_coproc_pid=""
-        __tab_start_coproc
-        print -p -- "$1" 2>/dev/null || return
+__tab_start_coproc() {
+    if [[ -n "$__tab_coproc_pid" ]] && kill -0 "$__tab_coproc_pid" 2>/dev/null; then
+        return 0
     fi
-    local _resp _sep=$'\x1f' _echo _attempt=0
-    while (( _attempt < 3 )); do
-        (( _attempt++ ))
-        if ! read -t 0.2 -p _resp 2>/dev/null; then
-            return
-        fi
+    __tab_close_coproc
+    setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
+    coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null || return 1
+    __tab_coproc_pid=$!
+    # Dup the coproc pipes onto numeric fds. `zle -F` needs an actual fd
+    # number; the special `-p` shorthand isn't accepted there.
+    exec {__tab_fd_out}<&p 2>/dev/null || { __tab_close_coproc; return 1; }
+    exec {__tab_fd_in}>&p  2>/dev/null || { __tab_close_coproc; return 1; }
+    zle -F "$__tab_fd_out" __tab_response_handler 2>/dev/null
+    return 0
+}
+
+# ── Async write (no waiting) ──
+
+__tab_send_async() {
+    __tab_start_coproc || return 1
+    if ! print -u "$__tab_fd_in" -- "$1" 2>/dev/null; then
+        # Pipe closed (daemon died). Restart and retry once.
+        __tab_close_coproc
+        __tab_start_coproc || return 1
+        print -u "$__tab_fd_in" -- "$1" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+# ── Response handler (zle -F callback) ──
+#
+# Called by zle when fd_out has data. Drains every available line; applies
+# only the response whose echoed buffer matches the *current* BUFFER. Stale
+# responses (from buffers the user has already typed past) are silently
+# dropped, which is how echo correlation handles burst input.
+
+__tab_response_handler() {
+    emulate -L zsh
+    local fd=$1
+    local _resp _sep=$'\x1f' _echo cur_buf
+    local rendered=0
+
+    while IFS= read -r -u "$fd" -t 0 _resp 2>/dev/null; do
+        [[ -z "$_resp" ]] && continue
         _echo="${_resp%%$_sep*}"
-        if [[ "$_echo" == "$2" ]]; then
-            __tab_response="$_resp"
-            return
+        cur_buf="${BUFFER//$'\t'/ }"
+        cur_buf="${cur_buf//$'\n'/ }"
+        cur_buf="${cur_buf//$'\r'/ }"
+        cur_buf="${cur_buf//$'\x1f'/ }"
+        if [[ -z "$BUFFER" || $__tab_dismissed -eq 1 || "$_echo" != "$cur_buf" ]]; then
+            continue
+        fi
+        __tab_response="$_resp"
+        if __tab_parse; then
+            __tab_active=1
+            __tab_selected=0
+            __tab_render
+            rendered=1
+        else
+            __tab_active=0
+            __tab_candidates=()
+            __tab_clear_highlight
+            POSTDISPLAY=""
+            rendered=1
         fi
     done
+
+    (( rendered )) && zle -R
+    return 0
 }
 
 # ── Parse response ──
@@ -127,33 +192,36 @@ __tab_render() {
     POSTDISPLAY="$post"
 }
 
-__tab_update() {
-    [[ -z "$BUFFER" ]] && { __tab_active=0; __tab_candidates=(); __tab_clear_highlight; POSTDISPLAY=""; zle -M ""; return; }
-    __tab_active=1
-    __tab_selected=0
-    # `buf` = sanitized raw text; control bytes replaced with space so that
-    # bracketed-paste with embedded tabs/newlines still forms valid JSON and
-    # the daemon's buffer-echo correlation still matches.
-    local buf="${BUFFER//$'\t'/ }"
-    buf="${buf//$'\n'/ }"
-    buf="${buf//$'\r'/ }"
-    buf="${buf//$'\x1f'/ }"
-    # `json_buf` = JSON-escaped copy of `buf`. The daemon re-emits the parsed
-    # (unescaped) value, so we compare the echoed field to `buf`, NOT $BUFFER.
-    local json_buf="${buf//\\/\\\\}"
-    json_buf="${json_buf//\"/\\\"}"
-    local cwd="${PWD//\\/\\\\}"
-    cwd="${cwd//\"/\\\"}"
-    __tab_send_recv "{\"buffer\":\"$json_buf\",\"cwd\":\"$cwd\"}" "$buf"
-    if __tab_parse; then
-        __tab_render
-    else
+# ── Update entry point (fire-and-forget) ──
+
+__tab_update_async() {
+    if [[ -z "$BUFFER" ]]; then
         __tab_active=0
         __tab_candidates=()
         __tab_clear_highlight
         POSTDISPLAY=""
         zle -M ""
+        return
     fi
+    __tab_dismissed=0
+    # Drop stale ghost/menu eagerly: region_highlight indices break as soon
+    # as BUFFER changes by even one char, so showing the previous render
+    # against the new buffer would smear the highlights. Fresh state is
+    # painted when the response arrives.
+    __tab_clear_highlight
+    POSTDISPLAY=""
+    # `buf` = sanitized raw text; control bytes replaced with space so that
+    # bracketed-paste with embedded tabs/newlines still forms valid JSON
+    # and the daemon's buffer-echo correlation still matches.
+    local buf="${BUFFER//$'\t'/ }"
+    buf="${buf//$'\n'/ }"
+    buf="${buf//$'\r'/ }"
+    buf="${buf//$'\x1f'/ }"
+    local json_buf="${buf//\\/\\\\}"
+    json_buf="${json_buf//\"/\\\"}"
+    local cwd="${PWD//\\/\\\\}"
+    cwd="${cwd//\"/\\\"}"
+    __tab_send_async "{\"buffer\":\"$json_buf\",\"cwd\":\"$cwd\"}"
 }
 
 __tab_accept() {
@@ -176,7 +244,7 @@ __tab_wrap_widget() {
         __tab_orig_${widget}() { zle .${widget}; }
         __tab_wrapped_${widget}() {
             __tab_orig_${widget}
-            __tab_update
+            __tab_update_async
         }
         zle -N ${widget} __tab_wrapped_${widget}
     "
@@ -245,6 +313,7 @@ bindkey '^M' __tab_enter
 __tab_dismiss() {
     if (( __tab_active )); then
         __tab_active=0
+        __tab_dismissed=1
         __tab_candidates=()
         __tab_clear_highlight
         POSTDISPLAY=""
@@ -256,6 +325,7 @@ bindkey '\e' __tab_dismiss
 
 __tab_reset_state() {
     __tab_active=0
+    __tab_dismissed=0
     __tab_candidates=()
     __tab_sources=()
     __tab_selected=0
@@ -278,7 +348,7 @@ autoload -Uz add-zsh-hook
 add-zsh-hook preexec __tab_preexec
 
 __tab_cleanup() {
-    [[ -n "${__tab_coproc_pid:-}" ]] && kill "$__tab_coproc_pid" 2>/dev/null
+    __tab_close_coproc
 }
 trap __tab_cleanup EXIT
 

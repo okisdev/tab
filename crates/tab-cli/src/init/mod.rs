@@ -92,15 +92,65 @@ mod tests {
     }
 
     #[test]
-    fn zsh_script_compares_echo_to_sanitized_buf() {
-        // Regression: previously the echo-correlation used `$BUFFER` (raw),
-        // but the daemon echoes the sanitized (post-JSON-parse) value, so
-        // multi-line / tab-containing paste always failed to render.
+    fn zsh_script_compares_echo_to_current_buffer() {
+        // Regression: the daemon echoes the sanitized (post-JSON-parse) buffer,
+        // so the response handler must apply the same sanitisation to the live
+        // BUFFER before comparing. Multi-line / tab-containing paste depends
+        // on this matching.
         let s = script_for("zsh").unwrap();
         assert!(
-            s.contains(r#"__tab_send_recv "{\"buffer\":\"$json_buf\",\"cwd\":\"$cwd\"}" "$buf""#),
-            "echo comparison must use sanitized `$buf`, not raw `$BUFFER`"
+            s.contains(r#"cur_buf="${BUFFER//$'\t'/ }""#),
+            "response handler must sanitize BUFFER (tabs) before comparing to echo"
         );
+        assert!(
+            s.contains(r#""$_echo" != "$cur_buf""#),
+            "response handler must reject responses whose echo doesn't match the live buffer"
+        );
+    }
+
+    #[test]
+    fn zsh_script_is_async_via_zle_f() {
+        // The widget MUST NOT block on a daemon round-trip: third-party IMEs
+        // commit several characters at once, and a synchronous read serialises
+        // them into perceptible lag. The fix is `zle -F` on the coproc fd —
+        // widgets fire-and-forget, the handler renders when responses arrive.
+        let s = script_for("zsh").unwrap();
+        assert!(s.contains("zle -F"), "must register a zle -F fd handler");
+        assert!(s.contains("__tab_response_handler"), "handler function must exist");
+        assert!(s.contains("__tab_send_async"), "must use the fire-and-forget send");
+        assert!(
+            !s.contains("__tab_send_recv"),
+            "the synchronous send-recv must be removed; it's the source of IME lag"
+        );
+        assert!(
+            !s.contains("read -t 0.2"),
+            "the 200ms blocking read must be gone"
+        );
+    }
+
+    #[test]
+    fn zsh_script_widget_does_not_wait_for_response() {
+        // The widget body must call __tab_update_async and return; if it ever
+        // re-introduces a blocking read or a sync helper, IME burst input lag
+        // comes back.
+        let s = script_for("zsh").unwrap();
+        assert!(
+            s.contains("__tab_update_async"),
+            "wrapped widget must call the async update entry point"
+        );
+        // Coproc fds get dup'd to numeric fds so zle -F can register.
+        assert!(s.contains("<&p"), "must dup coproc read fd to a numeric fd");
+        assert!(s.contains(">&p"), "must dup coproc write fd to a numeric fd");
+    }
+
+    #[test]
+    fn zsh_script_dismiss_blocks_late_response_render() {
+        // Esc must beat a still-in-flight response: if a response arrives
+        // after the user dismissed, the handler must drop it instead of
+        // popping the menu back open.
+        let s = script_for("zsh").unwrap();
+        assert!(s.contains("__tab_dismissed"));
+        assert!(s.contains("$__tab_dismissed -eq 1"));
     }
 
     #[test]
