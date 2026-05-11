@@ -11,12 +11,15 @@ zsh gets the full ghost-text experience. bash / fish / pwsh get an in-terminal p
 ## quick start
 
 ```sh
-# install binaries
+# install via Homebrew (macOS)
+brew install okisdev/tap/tab
+# or build from source:
 cargo install --path crates/tab-cli --path crates/tab-daemon
 # or: cargo build --release   # then put ./target/release/tab{,-daemon} on PATH
 
 # install the background service and print shell hints
 tab install
+# (Homebrew users can instead run: brew services start okisdev/tap/tab)
 
 # add the shell integration (see per-shell section below)
 ```
