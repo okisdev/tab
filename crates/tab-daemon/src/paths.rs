@@ -64,14 +64,15 @@ pub fn query_paths(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate
             continue;
         }
 
-        // Tiered so a strong history match (frequent + recent + exact prefix,
-        // composite_score ~0.7–0.9) can outrank a path that only matched
-        // case-insensitively. Otherwise `cd ap` puts `Applications/` above a
-        // recently-used `cd apps/...`.
+        // Tiered so any plausible history hit beats a case-insensitive-only
+        // path match. History `composite_score` for prefix matches typically
+        // lands around 0.3–0.5 (fuzzy_norm dampens raw nucleo scores), so the
+        // case-insensitive tier has to sit below that to let `cd ap` surface
+        // a recently-used `cd apps/...` above the cwd entry `Applications/`.
         let score = if prefix.is_empty() || name_str.starts_with(prefix) {
             0.9
         } else if name_str.to_ascii_lowercase().starts_with(&prefix_lower) {
-            0.4
+            0.2
         } else {
             continue;
         };
