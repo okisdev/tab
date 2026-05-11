@@ -18,6 +18,9 @@ __tab_coproc_pid=""
 __tab_fd_in=""
 __tab_fd_out=""
 
+: ${TAB_GHOST_STYLE:=fg=8}
+: ${TAB_INPUT_STYLE:=fg=green}
+
 # ── Coprocess management ──
 
 __tab_close_coproc() {
@@ -162,7 +165,7 @@ __tab_render() {
     local buf_len=${#BUFFER}
 
     if [[ -n "$ghost" ]]; then
-        region_highlight+=("$buf_len $(( buf_len + ${#ghost} )) fg=8 memo=tab")
+        region_highlight+=("$buf_len $(( buf_len + ${#ghost} )) $TAB_GHOST_STYLE memo=tab")
     fi
 
     local i _cand icon prefix_str line
@@ -183,10 +186,12 @@ __tab_render() {
         post+="$line"
 
         if [[ -n "$BUFFER" && "$_cand" == "$BUFFER"* ]]; then
-            local gray_start=$(( line_start + ${#prefix_str} + ${#BUFFER} ))
+            local input_start=$(( line_start + ${#prefix_str} ))
+            local input_end=$(( input_start + ${#BUFFER} ))
+            region_highlight+=("$input_start $input_end $TAB_INPUT_STYLE memo=tab")
             local gray_end=$(( line_start + ${#line} ))
-            if (( gray_start < gray_end )); then
-                region_highlight+=("$gray_start $gray_end fg=8 memo=tab")
+            if (( input_end < gray_end )); then
+                region_highlight+=("$input_end $gray_end $TAB_GHOST_STYLE memo=tab")
             fi
         fi
     done
