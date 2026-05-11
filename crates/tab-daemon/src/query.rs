@@ -23,17 +23,8 @@ pub fn handle(
     let history_candidates = history.query(&req.buffer, &req.cwd, max, &match_mode);
     let history_candidates = ctx.filter_history(history_candidates);
 
-    // Path-command buffers (e.g. `cd `, `vim foo`) get filesystem-driven
-    // completions on top of history. Previously this branch short-circuited
-    // and threw away history entirely, so typing a single space after `cd`
-    // would collapse the menu from a full set of recent directories down to
-    // whatever happened to live in the current cwd. Merge the two so the
-    // suggestion list stays useful as the user fills in a path.
-    //
-    // Filter history to entries that start with `<cmd><space>`. The fuzzy
-    // scorer happily returns matches like `claude mcp list` for the query
-    // `cd m` (c-d-m chars appear in order), but those aren't completions for
-    // a `cd ...` buffer and just clutter the menu.
+    // Scope history to the same verb the user typed; otherwise the fuzzy
+    // scorer leaks unrelated matches like `claude mcp list` for `cd m`.
     if crate::paths::is_path_command(&req.buffer) {
         let path_candidates = crate::paths::query_paths(&req.buffer, &req.cwd, MAX_CANDIDATES);
         let cmd_prefix = command_prefix(&req.buffer);
@@ -50,8 +41,7 @@ pub fn handle(
     QueryResponse { candidates }
 }
 
-/// "cd m" → "cd ". Used to scope path-mode history results to the same verb
-/// the user typed, so fuzzy matches across unrelated commands don't leak in.
+/// "cd m" → "cd ".
 fn command_prefix(buffer: &str) -> String {
     match buffer.split_once(' ') {
         Some((cmd, _)) => format!("{cmd} "),
@@ -59,12 +49,6 @@ fn command_prefix(buffer: &str) -> String {
     }
 }
 
-/// Merge path completions with history hits by score (stable, descending).
-/// Path scores are tiered by match quality in `query_paths`; history uses
-/// `composite_score`. A strong history candidate (frequent, recent, exact
-/// prefix) outranks a path that only matched case-insensitively, so typing
-/// `cd ap` surfaces the recently-used `cd apps/...` above the cwd entry
-/// `Applications/`.
 pub(crate) fn merge_path_history(
     paths: Vec<Candidate>,
     history: Vec<Candidate>,

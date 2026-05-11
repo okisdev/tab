@@ -1,12 +1,5 @@
 pub const SCRIPT: &str = r#"
-# tab - terminal autocomplete plugin (zsh, async ghost-text)
-# Install: eval "$(tab init zsh)"
-#
-# The widget is fire-and-forget: it writes a JSON request to the daemon
-# coproc and returns immediately, so a single keystroke never blocks on a
-# round-trip. A `zle -F` fd handler picks up daemon responses whenever they
-# arrive and updates POSTDISPLAY in the background. This is what makes
-# burst input from a third-party IME (commits N chars at once) usable.
+# tab - zsh integration (async ghost-text). Install: eval "$(tab init zsh)"
 
 __tab_bin="${commands[tab]:-tab}"
 __tab_selected=0
@@ -20,8 +13,7 @@ __tab_fd_out=""
 
 : ${TAB_GHOST_STYLE:=fg=8}
 : ${TAB_INPUT_STYLE:=fg=green}
-
-# ── Coprocess management ──
+: ${TAB_SHOW_ICONS:=0}
 
 __tab_close_coproc() {
     if [[ -n "$__tab_fd_out" ]]; then
@@ -47,20 +39,16 @@ __tab_start_coproc() {
     setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
     coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null || return 1
     __tab_coproc_pid=$!
-    # Dup the coproc pipes onto numeric fds. `zle -F` needs an actual fd
-    # number; the special `-p` shorthand isn't accepted there.
+    # zle -F needs a real fd number; the `-p` shorthand isn't accepted there.
     exec {__tab_fd_out}<&p 2>/dev/null || { __tab_close_coproc; return 1; }
     exec {__tab_fd_in}>&p  2>/dev/null || { __tab_close_coproc; return 1; }
     zle -F "$__tab_fd_out" __tab_response_handler 2>/dev/null
     return 0
 }
 
-# ── Async write (no waiting) ──
-
 __tab_send_async() {
     __tab_start_coproc || return 1
     if ! print -u "$__tab_fd_in" -- "$1" 2>/dev/null; then
-        # Pipe closed (daemon died). Restart and retry once.
         __tab_close_coproc
         __tab_start_coproc || return 1
         print -u "$__tab_fd_in" -- "$1" 2>/dev/null || return 1
@@ -68,14 +56,8 @@ __tab_send_async() {
     return 0
 }
 
-# ── Response handler (zle -F callback) ──
-#
-# `zle -F` callbacks run outside widget context: BUFFER, CURSOR, POSTDISPLAY
-# and friends are not exposed there. So the fd handler only drains the pipe
-# and trampolines into a real widget (`__tab_apply_response`) via `zle …`,
-# which gets full ZLE state. Stale responses (whose echo doesn't match the
-# live buffer) are dropped inside the widget.
-
+# zle -F callbacks run outside widget context (BUFFER/CURSOR/POSTDISPLAY not
+# exposed). Drain the pipe here and trampoline into a real widget.
 __tab_response_handler() {
     local fd=$1
     local _resp
@@ -112,8 +94,6 @@ __tab_apply_response_widget() {
 }
 zle -N __tab_apply_response __tab_apply_response_widget
 
-# ── Parse response ──
-
 __tab_parse() {
     __tab_candidates=()
     __tab_sources=()
@@ -132,14 +112,11 @@ __tab_parse() {
     (( ${#__tab_candidates[@]} > 0 ))
 }
 
-# ── Render via POSTDISPLAY + region_highlight ──
-
 __tab_clear_highlight() {
     local -a _rh=()
     local _e
     for _e in "${(@)region_highlight}"; do
-        # Match memo=tab as a whole token — don't clobber other plugins'
-        # `memo=tabular` / `memo=tab-xyz` etc.
+        # Match memo=tab as a whole token — don't clobber memo=tabular etc.
         [[ "$_e" == *"memo=tab" || "$_e" == *"memo=tab "* ]] || _rh+=("$_e")
     done
     region_highlight=("${_rh[@]}")
@@ -154,31 +131,36 @@ __tab_render() {
         return
     fi
 
-    __tab_clear_highlight
     zle -M ""
 
     local selected="${__tab_candidates[$(( __tab_selected + 1 ))]}"
     local ghost=""
     [[ "$selected" == "$BUFFER"* ]] && ghost="${selected#$BUFFER}"
 
-    local post="$ghost"
     local buf_len=${#BUFFER}
+    local post="$ghost"
+    local -a _tab_rh=()
 
     if [[ -n "$ghost" ]]; then
-        region_highlight+=("$buf_len $(( buf_len + ${#ghost} )) $TAB_GHOST_STYLE memo=tab")
+        _tab_rh+=("$buf_len $(( buf_len + ${#ghost} )) $TAB_GHOST_STYLE memo=tab")
     fi
 
     local i _cand icon prefix_str line
     for (( i = 1; i <= n; i++ )); do
         _cand="${__tab_candidates[$i]}"
-        case "${__tab_sources[$i]}" in
-            H) icon="H" ;; S|B) icon="S" ;; *) icon="P" ;;
-        esac
+
+        if [[ "$TAB_SHOW_ICONS" != "0" && -n "$TAB_SHOW_ICONS" ]]; then
+            case "${__tab_sources[$i]}" in
+                H) icon="H " ;; S|B) icon="S " ;; *) icon="P " ;;
+            esac
+        else
+            icon=""
+        fi
 
         if (( i - 1 == __tab_selected )); then
-            prefix_str=$'\n'" > $icon "
+            prefix_str=$'\n'" > ${icon}"
         else
-            prefix_str=$'\n'"   $icon "
+            prefix_str=$'\n'"   ${icon}"
         fi
         line="${prefix_str}${_cand}"
 
@@ -188,18 +170,18 @@ __tab_render() {
         if [[ -n "$BUFFER" && "$_cand" == "$BUFFER"* ]]; then
             local input_start=$(( line_start + ${#prefix_str} ))
             local input_end=$(( input_start + ${#BUFFER} ))
-            region_highlight+=("$input_start $input_end $TAB_INPUT_STYLE memo=tab")
+            _tab_rh+=("$input_start $input_end $TAB_INPUT_STYLE memo=tab")
             local gray_end=$(( line_start + ${#line} ))
             if (( input_end < gray_end )); then
-                region_highlight+=("$input_end $gray_end $TAB_GHOST_STYLE memo=tab")
+                _tab_rh+=("$input_end $gray_end $TAB_GHOST_STYLE memo=tab")
             fi
         fi
     done
 
     POSTDISPLAY="$post"
+    __tab_clear_highlight
+    region_highlight+=("${_tab_rh[@]}")
 }
-
-# ── Update entry point (fire-and-forget) ──
 
 __tab_update_async() {
     if [[ -z "$BUFFER" ]]; then
@@ -211,15 +193,12 @@ __tab_update_async() {
         return
     fi
     __tab_dismissed=0
-    # Drop stale ghost/menu eagerly: region_highlight indices break as soon
-    # as BUFFER changes by even one char, so showing the previous render
-    # against the new buffer would smear the highlights. Fresh state is
-    # painted when the response arrives.
+    # region_highlight indices break as soon as BUFFER changes by even one
+    # char; drop stale state immediately and let the response repaint.
     __tab_clear_highlight
     POSTDISPLAY=""
-    # `buf` = sanitized raw text; control bytes replaced with space so that
-    # bracketed-paste with embedded tabs/newlines still forms valid JSON
-    # and the daemon's buffer-echo correlation still matches.
+    # Sanitize control bytes so bracketed-paste with embedded tabs/newlines
+    # still forms valid JSON and the daemon's buffer-echo correlation matches.
     local buf="${BUFFER//$'\t'/ }"
     buf="${buf//$'\n'/ }"
     buf="${buf//$'\r'/ }"
@@ -342,9 +321,8 @@ __tab_reset_state() {
 
 __tab_preexec() { __tab_reset_state; }
 
-# Runs at the start of every new line, after Ctrl-C aborts or `accept-line`.
-# Without this, interrupting mid-edit leaves __tab_active=1 and the next Tab
-# inserts a stale candidate from the prior line.
+# Without this, Ctrl-C mid-edit leaves __tab_active=1 and the next Tab inserts
+# a stale candidate from the prior line.
 __tab_line_init_widget() {
     __tab_reset_state
     zle -M ""
@@ -359,11 +337,8 @@ __tab_cleanup() {
 }
 trap __tab_cleanup EXIT
 
-# ── zsh-autosuggestions coexistence ──
-#
-# zsh-autosuggestions also wraps `self-insert` and also writes POSTDISPLAY,
-# so whichever plugin sources last wins and the other is silently broken.
-# tab already provides ghost-text, so disable autosuggestions when present.
+# zsh-autosuggestions also wraps self-insert and writes POSTDISPLAY; whichever
+# plugin sources last wins and the other is silently broken. Disable it.
 if typeset -f _zsh_autosuggest_disable &>/dev/null; then
     _zsh_autosuggest_disable 2>/dev/null || true
 fi
