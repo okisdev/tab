@@ -64,16 +64,24 @@ pub fn query_paths(buffer: &str, cwd: &str, max_results: usize) -> Vec<Candidate
             continue;
         }
 
-        if !prefix.is_empty() && !name_str.to_ascii_lowercase().starts_with(&prefix_lower) {
+        // Tiered so a strong history match (frequent + recent + exact prefix,
+        // composite_score ~0.7–0.9) can outrank a path that only matched
+        // case-insensitively. Otherwise `cd ap` puts `Applications/` above a
+        // recently-used `cd apps/...`.
+        let score = if prefix.is_empty() || name_str.starts_with(prefix) {
+            0.9
+        } else if name_str.to_ascii_lowercase().starts_with(&prefix_lower) {
+            0.4
+        } else {
             continue;
-        }
+        };
 
         let suffix = if is_dir { "/" } else { "" };
         let full_text = format!("{cmd} {dir_part}{name_str}{suffix}");
 
         candidates.push(Candidate {
             text: full_text,
-            score: 1.0,
+            score,
             match_positions: vec![],
             source: CandidateSource::Path,
         });
@@ -220,5 +228,15 @@ mod tests {
         // `cd` with no space — still typing command, no completion
         let dir = tempfile::tempdir().unwrap();
         assert!(query_paths("cd", dir.path().to_str().unwrap(), 10).is_empty());
+    }
+
+    #[test]
+    fn query_paths_case_sensitive_outranks_insensitive() {
+        let dir = make_dir_with(&[("Apps", true), ("apple", true)]);
+        let cwd = dir.path().to_str().unwrap();
+        let cands = query_paths("cd ap", cwd, 10);
+        let apple = cands.iter().find(|c| c.text == "cd apple/").unwrap();
+        let apps = cands.iter().find(|c| c.text == "cd Apps/").unwrap();
+        assert!(apple.score > apps.score);
     }
 }

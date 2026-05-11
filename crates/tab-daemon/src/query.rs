@@ -59,28 +59,26 @@ fn command_prefix(buffer: &str) -> String {
     }
 }
 
-/// Combine concrete path completions with history hits. Path entries come
-/// first (they exist on disk right now and are guaranteed to work), history
-/// fills the rest up to `max` so the user keeps seeing previously-typed
-/// directories that aren't necessarily under the current cwd. Source tags are
-/// preserved as-is so the icon column still reflects where each entry came
-/// from.
+/// Merge path completions with history hits by score (stable, descending).
+/// Path scores are tiered by match quality in `query_paths`; history uses
+/// `composite_score`. A strong history candidate (frequent, recent, exact
+/// prefix) outranks a path that only matched case-insensitively, so typing
+/// `cd ap` surfaces the recently-used `cd apps/...` above the cwd entry
+/// `Applications/`.
 pub(crate) fn merge_path_history(
     paths: Vec<Candidate>,
     history: Vec<Candidate>,
     max: usize,
 ) -> Vec<Candidate> {
+    let mut combined: Vec<Candidate> = paths.into_iter().chain(history).collect();
+    combined.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut seen = HashSet::new();
     let mut result = Vec::with_capacity(max);
-    for c in paths {
-        if seen.insert(c.text.clone()) {
-            result.push(c);
-        }
-        if result.len() >= max {
-            return result;
-        }
-    }
-    for c in history {
+    for c in combined {
         if seen.insert(c.text.clone()) {
             result.push(c);
         }
@@ -238,5 +236,24 @@ mod tests {
             c("cd e/", CandidateSource::History),
         ];
         assert_eq!(merge_path_history(paths, history, 3).len(), 3);
+    }
+
+    fn cs(text: &str, score: f64, source: CandidateSource) -> Candidate {
+        Candidate {
+            text: text.into(),
+            score,
+            match_positions: vec![],
+            source,
+        }
+    }
+
+    #[test]
+    fn merge_path_history_high_history_score_beats_low_path() {
+        let paths = vec![cs("cd Applications/", 0.4, CandidateSource::Path)];
+        let history = vec![cs("cd apps/www", 0.8, CandidateSource::History)];
+        let merged = merge_path_history(paths, history, 8);
+        assert_eq!(merged[0].text, "cd apps/www");
+        assert_eq!(merged[0].source, CandidateSource::History);
+        assert_eq!(merged[1].text, "cd Applications/");
     }
 }
