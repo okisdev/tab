@@ -283,15 +283,19 @@ bindkey '\e[B' __tab_nav_down
 bindkey '\eOA' __tab_nav_up
 bindkey '\eOB' __tab_nav_down
 
+# Enter must always run accept-line; accepting candidates is Tab / Right's job.
+# Gating it on "selection equals buffer" silently swallowed typos: the fuzzy
+# matcher returns near-misses, __tab_active flips to 1, and the command never
+# ran while $? stuck to its previous value.
 __tab_enter() {
     if (( __tab_active )); then
-        local text="${__tab_candidates[$(( __tab_selected + 1 ))]}"
-        local buf="$BUFFER"
-        __tab_accept
-        [[ "$text" == "$buf" ]] && zle accept-line
-    else
-        zle accept-line
+        __tab_active=0
+        __tab_candidates=()
+        __tab_clear_highlight
+        POSTDISPLAY=""
+        zle -M ""
     fi
+    zle accept-line
 }
 zle -N __tab_enter
 bindkey '^M' __tab_enter
