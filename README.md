@@ -43,7 +43,7 @@ widgets wrapped: `self-insert`, `backward-delete-char`, `bracketed-paste`, `yank
 key bindings:
 - Tab / → — accept highlighted candidate
 - ↑ / ↓ — navigate candidates
-- Enter — accept and execute if selection equals buffer
+- Enter — execute the buffer as typed (use Tab / → first to accept a candidate)
 - Esc — dismiss
 
 ### bash (picker)
