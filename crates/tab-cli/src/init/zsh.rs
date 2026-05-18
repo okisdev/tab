@@ -39,6 +39,10 @@ __tab_start_coproc() {
     setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY 2>/dev/null
     coproc { trap '' INT; exec "$__tab_bin" hook; } 2>/dev/null || return 1
     __tab_coproc_pid=$!
+    # Drop the coproc from the job table; otherwise `%j` stays >=1 for the
+    # life of the session and lights up prompt segments like powerlevel10k's
+    # background_jobs. Liveness is still tracked via $__tab_coproc_pid.
+    builtin disown 2>/dev/null
     # zle -F needs a real fd number; the `-p` shorthand isn't accepted there.
     exec {__tab_fd_out}<&p 2>/dev/null || { __tab_close_coproc; return 1; }
     exec {__tab_fd_in}>&p  2>/dev/null || { __tab_close_coproc; return 1; }
