@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "tab-cli"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "tab-core"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "tab-daemon"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "tab-history"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "notify",
