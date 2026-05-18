@@ -16,12 +16,16 @@ __tab_fd_out=""
 : ${TAB_SHOW_ICONS:=0}
 
 __tab_close_coproc() {
+    # `exec REDIR` with no command applies all redirections to the current
+    # shell permanently, so a trailing `2>/dev/null` here would silently leave
+    # the shell's stderr pointing at /dev/null forever. Wrap the exec in a
+    # block so the noise suppression only scopes to the close itself.
     if [[ -n "$__tab_fd_out" ]]; then
         zle -F "$__tab_fd_out" 2>/dev/null
-        exec {__tab_fd_out}<&- 2>/dev/null
+        { exec {__tab_fd_out}<&- } 2>/dev/null
     fi
     if [[ -n "$__tab_fd_in" ]]; then
-        exec {__tab_fd_in}>&- 2>/dev/null
+        { exec {__tab_fd_in}>&- } 2>/dev/null
     fi
     if [[ -n "$__tab_coproc_pid" ]] && kill -0 "$__tab_coproc_pid" 2>/dev/null; then
         kill "$__tab_coproc_pid" 2>/dev/null
@@ -44,8 +48,9 @@ __tab_start_coproc() {
     # background_jobs. Liveness is still tracked via $__tab_coproc_pid.
     builtin disown 2>/dev/null
     # zle -F needs a real fd number; the `-p` shorthand isn't accepted there.
-    exec {__tab_fd_out}<&p 2>/dev/null || { __tab_close_coproc; return 1; }
-    exec {__tab_fd_in}>&p  2>/dev/null || { __tab_close_coproc; return 1; }
+    # The `{ ... } 2>/dev/null` wrapping is required; see __tab_close_coproc.
+    { exec {__tab_fd_out}<&p } 2>/dev/null || { __tab_close_coproc; return 1; }
+    { exec {__tab_fd_in}>&p  } 2>/dev/null || { __tab_close_coproc; return 1; }
     zle -F "$__tab_fd_out" __tab_response_handler 2>/dev/null
     return 0
 }
